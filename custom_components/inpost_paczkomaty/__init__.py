@@ -101,8 +101,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         """Persist rotated OAuth tokens in the config entry."""
         data = {
             **entry.data,
-            CONF_ACCESS_TOKEN: tokens.access_token,
-            CONF_REFRESH_TOKEN: tokens.refresh_token,
+            CONF_ACCESS_TOKEN: tokens.access_token
+            or entry.data.get(CONF_ACCESS_TOKEN, ""),
+            CONF_REFRESH_TOKEN: tokens.refresh_token
+            or entry.data.get(CONF_REFRESH_TOKEN, ""),
             CONF_TOKEN_EXPIRES_IN: tokens.expires_in,
             CONF_TOKEN_TYPE: tokens.token_type,
         }

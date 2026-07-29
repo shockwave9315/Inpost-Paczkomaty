@@ -4,20 +4,25 @@ from __future__ import annotations
 
 import logging
 from typing import Any
+
 import voluptuous as vol
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 import homeassistant.helpers.config_validation as cv
 
 from custom_components.inpost_paczkomaty.coordinator import InpostDataCoordinator
 from .api import InPostApiClient
 from .const import (
+    CONF_ACCESS_TOKEN,
     CONF_HTTP_TIMEOUT,
     CONF_IGNORED_EN_ROUTE_STATUSES,
     CONF_PARCEL_LOCKERS_URL,
+    CONF_REFRESH_TOKEN,
     CONF_SHOW_ONLY_OWN_PARCELS,
+    CONF_TOKEN_EXPIRES_IN,
+    CONF_TOKEN_TYPE,
     CONF_UPDATE_INTERVAL,
     DEFAULT_HTTP_TIMEOUT,
     DEFAULT_IGNORED_EN_ROUTE_STATUSES,
@@ -27,6 +32,7 @@ from .const import (
     DOMAIN,
     ENTRY_PHONE_NUMBER_CONFIG,
 )
+from .models import AuthTokens
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -90,9 +96,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         CONF_SHOW_ONLY_OWN_PARCELS, DEFAULT_SHOW_ONLY_OWN_PARCELS
     )
 
+    @callback
+    def persist_refreshed_tokens(tokens: AuthTokens) -> None:
+        """Persist rotated OAuth tokens in the config entry."""
+        data = {
+            **entry.data,
+            CONF_ACCESS_TOKEN: tokens.access_token,
+            CONF_REFRESH_TOKEN: tokens.refresh_token,
+            CONF_TOKEN_EXPIRES_IN: tokens.expires_in,
+            CONF_TOKEN_TYPE: tokens.token_type,
+        }
+        hass.config_entries.async_update_entry(entry, data=data)
+
     api_client = InPostApiClient(
         hass,
         entry,
+        on_token_refresh=persist_refreshed_tokens,
         ignored_en_route_statuses=ignored_en_route_statuses,
         http_timeout=http_timeout,
         parcel_lockers_url=parcel_lockers_url,
@@ -100,14 +119,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
     coordinator = InpostDataCoordinator(hass, api_client, update_interval)
 
-    await coordinator.async_config_entry_first_refresh()
-
-    entry.runtime_data = coordinator
-    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    try:
+        await coordinator.async_config_entry_first_refresh()
+        entry.runtime_data = coordinator
+        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    except Exception:
+        await api_client.close()
+        raise
 
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
-    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    if unload_ok:
+        await entry.runtime_data.api_client.close()
+    return unload_ok

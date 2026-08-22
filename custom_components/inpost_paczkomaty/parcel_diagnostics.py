@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import fields, is_dataclass
 from hashlib import sha256
+import json
+import re
 from types import UnionType
 from typing import Any, Union, get_args, get_origin, get_type_hints
 
@@ -38,6 +40,9 @@ _MAX_TRAVERSAL_DEPTH = 8
 _MAX_LIST_ITEMS = 50
 _MAX_VISITED_NODES = 500
 _FINGERPRINT_DOMAIN = b"inpost-paczkomaty:grouping-candidate:v1\0"
+_CONTAINER_FINGERPRINT_DOMAIN = b"inpost-paczkomaty:grouping-container:v1\0"
+_DYNAMIC_KEY_FINGERPRINT_DOMAIN = b"inpost-paczkomaty:dynamic-key:v1\0"
+_SCHEMA_KEY = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 
 
 def _normalized_key(key: object) -> str:
@@ -57,6 +62,17 @@ def _is_sensitive(key: object) -> bool:
 def _is_grouping_candidate(key: object) -> bool:
     normalized = _normalized_key(key)
     return any(hint in normalized for hint in _GROUPING_HINTS)
+
+
+def _diagnostic_key(key: object) -> str:
+    """Return a schema key or a stable opaque segment for dynamic map keys."""
+    text = str(key)
+    if _SCHEMA_KEY.fullmatch(text):
+        return text
+    digest = sha256(_DYNAMIC_KEY_FINGERPRINT_DOMAIN + text.encode("utf-8")).hexdigest()[
+        :24
+    ]
+    return f"<key:sha256:{digest}>"
 
 
 def _dataclass_type(annotation: Any) -> type[Any] | None:
@@ -80,19 +96,66 @@ def _model_fields(model: type[Any]) -> dict[str, type[Any] | None]:
     }
 
 
+def _bounded_fingerprint_value(
+    value: Any, traversal: dict[str, int], depth: int = 0
+) -> Any:
+    """Build a bounded canonical value used only as fingerprint input."""
+    if depth > _MAX_TRAVERSAL_DEPTH or traversal["nodes"] >= _MAX_VISITED_NODES:
+        return ["limit"]
+    traversal["nodes"] += 1
+    if isinstance(value, dict):
+        items = []
+        for key, item in sorted(
+            value.items(), key=lambda pair: _diagnostic_key(pair[0])
+        ):
+            if traversal["nodes"] >= _MAX_VISITED_NODES:
+                break
+            if _is_sensitive(key):
+                continue
+            items.append(
+                [
+                    _diagnostic_key(key),
+                    _bounded_fingerprint_value(item, traversal, depth + 1),
+                ]
+            )
+        return ["dict", items]
+    if isinstance(value, list):
+        return [
+            "list",
+            [
+                _bounded_fingerprint_value(item, traversal, depth + 1)
+                for item in value[:_MAX_LIST_ITEMS]
+                if traversal["nodes"] < _MAX_VISITED_NODES
+            ],
+        ]
+    value_type = f"{type(value).__module__}.{type(value).__qualname__}"
+    return ["scalar", value_type, repr(value)]
+
+
+def _container_fingerprint(value: dict[Any, Any] | list[Any]) -> str:
+    canonical = _bounded_fingerprint_value(value, {"nodes": 0})
+    encoded = json.dumps(canonical, separators=(",", ":"), ensure_ascii=False).encode()
+    digest = sha256(_CONTAINER_FINGERPRINT_DOMAIN + encoded).hexdigest()[:32]
+    return f"sha256:{digest}"
+
+
 def _structural_summary(value: Any) -> Any:
     """Summarize containers without copying their potentially private values."""
     if isinstance(value, dict):
         return {
             "type": "dict",
-            "keys": sorted(str(key) for key in value if not _is_sensitive(key)),
+            "keys": sorted(
+                _diagnostic_key(key) for key in value if not _is_sensitive(key)
+            ),
             "size": len(value),
+            "fingerprint": _container_fingerprint(value),
         }
     if isinstance(value, list):
         return {
             "type": "list",
             "size": len(value),
             "item_types": sorted({type(item).__name__ for item in value}),
+            "fingerprint": _container_fingerprint(value),
         }
     if value is None or isinstance(value, bool):
         return value
@@ -124,7 +187,8 @@ def _inspect_mapping(
         traversal["nodes"] += 1
         if _is_sensitive(key):
             continue
-        item_path = f"{path}.{key}" if path else str(key)
+        safe_key = _diagnostic_key(key)
+        item_path = f"{path}.{safe_key}" if path else safe_key
         child_model = modeled.get(key)
         if key not in modeled:
             unknown_fields.append({"path": item_path, "type": type(item).__name__})

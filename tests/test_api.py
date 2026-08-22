@@ -450,6 +450,99 @@ class TestInPostApiClient:
             assert result.ready_for_pickup["GDA117M"].count == 1
 
     @pytest.mark.asyncio
+    async def test_get_parcels_builds_redacted_unknown_field_diagnostics(
+        self, mock_hass, mock_config_entry
+    ):
+        """Preserve discovery metadata without exposing parcel secrets."""
+        parcels = []
+        for index, suffix in enumerate(("100001", "100002", "100003")):
+            parcel = {
+                "shipmentNumber": f"999999999999999999{suffix}",
+                "shipmentType": "parcel",
+                "status": "READY_TO_PICKUP",
+                "pickUpPoint": {"name": "TEST01"},
+                "openCode": f"pickup-secret-{index}",
+                "qrCode": f"qr-secret-{index}",
+                "receiver": {"phoneNumber": {"prefix": "+48", "value": "555000000"}},
+                "deliveryToken": f"token-secret-{index}",
+            }
+            if index < 2:
+                parcel["syntheticGroupId"] = "shared-test-group"
+                parcel["linkedParcel"] = "123456789012345678901234"
+                parcel["multiCompartment"] = {
+                    "slot": index,
+                    "openCode": f"nested-secret-{index}",
+                }
+                parcel["relations"] = [
+                    {
+                        "relationId": "shared-list-relation",
+                        "secret": f"relation-secret-{index}",
+                    }
+                ]
+            parcels.append(parcel)
+
+        client = InPostApiClient(mock_hass, mock_config_entry)
+        mock_response = HttpResponse(body={"parcels": parcels}, status=200)
+
+        with patch.object(
+            client._http_client, "get", new_callable=AsyncMock
+        ) as mock_get:
+            mock_get.return_value = mock_response
+            result = await client.get_parcels()
+
+        assert result.all_count == 3
+        diagnostics = client.parcel_diagnostics
+        records = diagnostics["records"]
+        assert [record["shipment_suffix"] for record in records] == [
+            "100001",
+            "100002",
+            "100003",
+        ]
+        assert all(record["status"] == "READY_TO_PICKUP" for record in records)
+        group_values = [
+            candidate["value"]
+            for record in records[:2]
+            for candidate in record["grouping_candidates"]
+            if candidate["path"] == "synthetic_group_id"
+        ]
+        assert len(group_values) == 2
+        assert group_values[0] == group_values[1]
+        assert group_values[0]["type"] == "str"
+        assert group_values[0]["fingerprint"].startswith("sha256:")
+        relation_values = [
+            candidate["value"]
+            for record in records[:2]
+            for candidate in record["grouping_candidates"]
+            if candidate["path"] == "relations[0].relation_id"
+        ]
+        assert len(relation_values) == 2
+        assert relation_values[0] == relation_values[1]
+        assert records[2]["grouping_candidates"] == []
+        assert any(
+            field == {"path": "multi_compartment", "type": "dict"}
+            for field in records[0]["unknown_fields"]
+        )
+
+        serialized = json.dumps(diagnostics)
+        for forbidden in (
+            "pickup-secret",
+            "qr-secret",
+            "nested-secret",
+            "token-secret",
+            "relation-secret",
+            "555000000",
+            "shared-test-group",
+            "shared-list-relation",
+            "123456789012345678901234",
+            "open_code",
+            "qr_code",
+            "phone_number",
+            "delivery_token",
+            "999999999999999999100001",
+        ):
+            assert forbidden not in serialized
+
+    @pytest.mark.asyncio
     async def test_get_parcels_api_error(self, mock_hass, mock_config_entry):
         """Test API error handling."""
         client = InPostApiClient(mock_hass, mock_config_entry)

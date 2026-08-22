@@ -49,6 +49,9 @@ from custom_components.inpost_paczkomaty.models import (
     TrackedParcelsResponse,
     UserProfile,
 )
+from custom_components.inpost_paczkomaty.parcel_diagnostics import (
+    build_parcel_diagnostics,
+)
 from custom_components.inpost_paczkomaty.utils import (
     convert_keys_to_snake_case,
     get_language_code,
@@ -106,6 +109,7 @@ class InPostApiClient:
             if ignored_en_route_statuses is not None
             else DEFAULT_IGNORED_EN_ROUTE_STATUSES
         )
+        self.parcel_diagnostics: dict[str, object] = {"records": []}
 
         # Authenticated client for InPost mobile API
         self._http_client = HttpClient(
@@ -230,6 +234,14 @@ class InPostApiClient:
 
         # Convert camelCase keys to snake_case
         converted_data = convert_keys_to_snake_case(response.body)
+
+        # Preserve only a sanitized structural view before dacite discards fields
+        # that are not represented by ApiParcel.
+        self.parcel_diagnostics = build_parcel_diagnostics(
+            converted_data.get("parcels", [])
+            if isinstance(converted_data, dict)
+            else []
+        )
 
         # Parse response using dacite
         dacite_config = Config(

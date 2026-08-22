@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import fields, is_dataclass
+from hashlib import sha256
 from types import UnionType
 from typing import Any, Union, get_args, get_origin, get_type_hints
 
@@ -33,6 +34,10 @@ _SENSITIVE_HINTS = (
     "pin",
     "code",
 )
+_MAX_TRAVERSAL_DEPTH = 8
+_MAX_LIST_ITEMS = 50
+_MAX_VISITED_NODES = 500
+_FINGERPRINT_DOMAIN = b"inpost-paczkomaty:grouping-candidate:v1\0"
 
 
 def _normalized_key(key: object) -> str:
@@ -89,7 +94,16 @@ def _structural_summary(value: Any) -> Any:
             "size": len(value),
             "item_types": sorted({type(item).__name__ for item in value}),
         }
-    return value
+    if value is None or isinstance(value, bool):
+        return value
+    value_type = f"{type(value).__module__}.{type(value).__qualname__}"
+    digest = sha256(
+        _FINGERPRINT_DOMAIN
+        + value_type.encode("utf-8")
+        + b"\0"
+        + repr(value).encode("utf-8")
+    ).hexdigest()[:24]
+    return {"type": type(value).__name__, "fingerprint": f"sha256:{digest}"}
 
 
 def _inspect_mapping(
@@ -98,9 +112,16 @@ def _inspect_mapping(
     path: str,
     unknown_fields: list[dict[str, str]],
     grouping_candidates: list[dict[str, Any]],
+    traversal: dict[str, int],
+    depth: int = 0,
 ) -> None:
+    if depth > _MAX_TRAVERSAL_DEPTH or traversal["nodes"] >= _MAX_VISITED_NODES:
+        return
     modeled = _model_fields(model) if model is not None else {}
     for key, item in value.items():
+        if traversal["nodes"] >= _MAX_VISITED_NODES:
+            return
+        traversal["nodes"] += 1
         if _is_sensitive(key):
             continue
         item_path = f"{path}.{key}" if path else str(key)
@@ -113,7 +134,62 @@ def _inspect_mapping(
                 )
         if isinstance(item, dict):
             _inspect_mapping(
-                item, child_model, item_path, unknown_fields, grouping_candidates
+                item,
+                child_model,
+                item_path,
+                unknown_fields,
+                grouping_candidates,
+                traversal,
+                depth + 1,
+            )
+        elif isinstance(item, list):
+            _inspect_list(
+                item,
+                child_model,
+                item_path,
+                unknown_fields,
+                grouping_candidates,
+                traversal,
+                depth + 1,
+            )
+
+
+def _inspect_list(
+    value: list[Any],
+    model: type[Any] | None,
+    path: str,
+    unknown_fields: list[dict[str, str]],
+    grouping_candidates: list[dict[str, Any]],
+    traversal: dict[str, int],
+    depth: int,
+) -> None:
+    """Inspect bounded container items without exposing scalar list contents."""
+    if depth > _MAX_TRAVERSAL_DEPTH:
+        return
+    for index, item in enumerate(value[:_MAX_LIST_ITEMS]):
+        if traversal["nodes"] >= _MAX_VISITED_NODES:
+            return
+        item_path = f"{path}[{index}]"
+        if isinstance(item, dict):
+            _inspect_mapping(
+                item,
+                model,
+                item_path,
+                unknown_fields,
+                grouping_candidates,
+                traversal,
+                depth + 1,
+            )
+        elif isinstance(item, list):
+            traversal["nodes"] += 1
+            _inspect_list(
+                item,
+                model,
+                item_path,
+                unknown_fields,
+                grouping_candidates,
+                traversal,
+                depth + 1,
             )
 
 
@@ -128,7 +204,14 @@ def build_parcel_diagnostics(raw_parcels: Any) -> dict[str, Any]:
             continue
         unknown_fields: list[dict[str, str]] = []
         grouping_candidates: list[dict[str, Any]] = []
-        _inspect_mapping(raw_record, ApiParcel, "", unknown_fields, grouping_candidates)
+        _inspect_mapping(
+            raw_record,
+            ApiParcel,
+            "",
+            unknown_fields,
+            grouping_candidates,
+            {"nodes": 0},
+        )
         shipment_number = raw_record.get("shipment_number")
         records.append(
             {

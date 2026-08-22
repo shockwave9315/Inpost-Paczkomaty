@@ -468,10 +468,17 @@ class TestInPostApiClient:
             }
             if index < 2:
                 parcel["syntheticGroupId"] = "shared-test-group"
+                parcel["linkedParcel"] = "123456789012345678901234"
                 parcel["multiCompartment"] = {
                     "slot": index,
                     "openCode": f"nested-secret-{index}",
                 }
+                parcel["relations"] = [
+                    {
+                        "relationId": "shared-list-relation",
+                        "secret": f"relation-secret-{index}",
+                    }
+                ]
             parcels.append(parcel)
 
         client = InPostApiClient(mock_hass, mock_config_entry)
@@ -492,12 +499,24 @@ class TestInPostApiClient:
             "100003",
         ]
         assert all(record["status"] == "READY_TO_PICKUP" for record in records)
-        assert [
+        group_values = [
             candidate["value"]
             for record in records[:2]
             for candidate in record["grouping_candidates"]
             if candidate["path"] == "synthetic_group_id"
-        ] == ["shared-test-group", "shared-test-group"]
+        ]
+        assert len(group_values) == 2
+        assert group_values[0] == group_values[1]
+        assert group_values[0]["type"] == "str"
+        assert group_values[0]["fingerprint"].startswith("sha256:")
+        relation_values = [
+            candidate["value"]
+            for record in records[:2]
+            for candidate in record["grouping_candidates"]
+            if candidate["path"] == "relations[0].relation_id"
+        ]
+        assert len(relation_values) == 2
+        assert relation_values[0] == relation_values[1]
         assert records[2]["grouping_candidates"] == []
         assert any(
             field == {"path": "multi_compartment", "type": "dict"}
@@ -510,7 +529,11 @@ class TestInPostApiClient:
             "qr-secret",
             "nested-secret",
             "token-secret",
+            "relation-secret",
             "555000000",
+            "shared-test-group",
+            "shared-list-relation",
+            "123456789012345678901234",
             "open_code",
             "qr_code",
             "phone_number",

@@ -14,6 +14,7 @@ from aiohttp.resolver import ThreadedResolver
 
 from .exceptions import InPostApiError
 from .models import HttpResponse
+from .utils import redact_headers
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -104,16 +105,6 @@ class HttpClient:
         if self.session and not self.session.closed:
             self.session.headers.update(headers)
 
-    def update_cookies(self, cookies: dict) -> None:
-        """
-        Update the session cookies.
-
-        Args:
-            cookies: Dictionary of cookies to add/update.
-        """
-        if self.session and not self.session.closed:
-            self.session.cookie_jar.update_cookies(cookies)
-
     async def _request(
         self,
         method: str,
@@ -144,7 +135,7 @@ class HttpClient:
         session = await self._ensure_session()
         _LOGGER.debug("Making %s request to %s", method, url)
         headers = {**self.headers, **(custom_headers or {})}
-        _LOGGER.debug("Headers: %s", headers)
+        _LOGGER.debug("Headers: %s", redact_headers(headers))
         request_timeout = timeout if timeout is not None else self.default_timeout
         try:
             async with asyncio.timeout(request_timeout):
@@ -173,8 +164,9 @@ class HttpClient:
             _LOGGER.warning("Request timed out")
             raise InPostApiError("Request timed out") from e
         except Exception as e:
-            _LOGGER.error("Error making request: %s", e)
-            raise e
+            # Callers decide how to report the failure; avoid duplicate ERRORs.
+            _LOGGER.debug("Error making %s request to %s: %r", method, url, e)
+            raise
 
     async def get(
         self,

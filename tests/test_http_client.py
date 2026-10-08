@@ -215,32 +215,6 @@ class TestHttpClient:
 
         await client.close()
 
-    @pytest.mark.asyncio
-    async def test_update_cookies_with_active_session(self):
-        """Test update_cookies updates active session cookies."""
-        client = HttpClient()
-
-        # Create a session first
-        await client._ensure_session()
-
-        # Update cookies
-        client.update_cookies({"test_cookie": "test_value"})
-
-        # The cookies should be in the cookie jar
-        # Note: aiohttp's SimpleCookieJar doesn't have a simple dict interface
-        # so we just verify the method doesn't raise
-        await client.close()
-
-    @pytest.mark.asyncio
-    async def test_update_cookies_without_session(self):
-        """Test update_cookies does nothing without active session."""
-        client = HttpClient()
-
-        # This should not raise even without a session
-        client.update_cookies({"test_cookie": "test_value"})
-
-        await client.close()
-
     def test_build_headers_with_all_params(self):
         """Test _build_headers with all parameters."""
         client = HttpClient()

@@ -192,10 +192,30 @@ class ApiClientError(Exception):
     pass
 
 
+class ApiAuthError(ApiClientError):
+    """Raised when InPost permanently rejects the stored credentials."""
+
+    pass
+
+
+class ApiResponseError(ApiClientError):
+    """Raised when the API returns a payload that cannot be interpreted."""
+
+    pass
+
+
 class RateLimitedError(ApiClientError):
     """Raised when API returns HTTP 429 (rate limited)."""
 
-    pass
+    def __init__(self, message: str, retry_after: Optional[float] = None) -> None:
+        """Initialize the error.
+
+        Args:
+            message: Human-readable error message.
+            retry_after: Seconds the server asked us to wait, if provided.
+        """
+        super().__init__(message)
+        self.retry_after = retry_after
 
 
 # Mapping of detail types to specific exception classes

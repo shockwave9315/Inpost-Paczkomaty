@@ -96,8 +96,8 @@ inpost_paczkomaty:
 
 | Option | Type | Default | Description |
 |:-------|:-----|:--------|:------------|
-| `update_interval_seconds` | integer | `30` | How often (in seconds) the integration polls the InPost API for updates. This is an unofficial API of the InPost mobile app; if you do not need near-real-time updates, a larger value (for example `300`) is kinder to it. |
-| `http_timeout_seconds` | integer | `30` | HTTP request timeout in seconds. Increase if you experience timeout errors. |
+| `update_interval_seconds` | integer, at least 1 | `30` | How often (in seconds) the integration polls the InPost API for updates. This is an unofficial API of the InPost mobile app; if you do not need near-real-time updates, a larger value (for example `300`) is kinder to it. |
+| `http_timeout_seconds` | integer, at least 1 | `30` | HTTP request timeout in seconds. Increase if you experience timeout errors. |
 | `ignored_en_route_statuses` | list | `["CONFIRMED"]` | List of en route statuses to leave out of the "en route" counts and list. See [Parcel Statuses](#parcel-statuses) below. |
 | `show_only_own_parcels` | boolean | `false` | When `true`, only shows parcels you own - in every sensor, including the all parcels count. When `false`, also shows parcels shared with you by others (e.g., family members). Useful to avoid duplicate counting in multi-user households. |
 | `parcel_lockers_url` | url | [InPost points URL](https://inpost.pl/sites/default/files/points.json) | URL for fetching the parcel lockers list. Only change if InPost changes their endpoint or if you want to use custom parcel lockers list. |
@@ -443,8 +443,8 @@ For each configured locker (identified by `[LOCKER_ID]`), the following entities
 | Platform        | Entity                                                     | Description                                                                        |
 |:----------------|:-----------------------------------------------------------|:-----------------------------------------------------------------------------------|
 | `sensor`        | `inpost_[PHONE_NUMBER]_[LOCKER_ID]_locker_id`              | The public ID of the specific parcel locker.                                       |
-| `sensor`        | `inpost_[PHONE_NUMBER]_[LOCKER_ID]_description`            | Description of the locker location (e.g., "przy sklepie Biedronka").               |
-| `sensor`        | `inpost_[PHONE_NUMBER]_[LOCKER_ID]_address`                | Full address of the locker (city, zip code, street, building number).              |
+| `sensor`        | `inpost_[PHONE_NUMBER]_[LOCKER_ID]_description`            | Description of the locker location (e.g., "przy sklepie Biedronka"); unknown for a locker added by typing its code. |
+| `sensor`        | `inpost_[PHONE_NUMBER]_[LOCKER_ID]_address`                | Address of the locker (city, zip code, street, building number), built from the parts that are known; unknown if there are none. |
 | `binary_sensor` | `inpost_[PHONE_NUMBER]_[LOCKER_ID]_ready_for_pickup`       | On if **any** parcels are available for pickup in this specific locker.            |
 | `sensor`        | `inpost_[PHONE_NUMBER]_[LOCKER_ID]_ready_for_pickup_count` | Number of parcels available for pickup in this specific locker.                    |
 | `binary_sensor` | `inpost_[PHONE_NUMBER]_[LOCKER_ID]_parcels_en_route`       | On if **any** parcels are en route to this specific locker.                        |

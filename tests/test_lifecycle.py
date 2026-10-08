@@ -5,21 +5,27 @@ from datetime import timedelta
 from unittest.mock import patch
 
 import pytest
+import voluptuous as vol
+from aiohttp import web
 from homeassistant.components.recorder import get_instance
 from homeassistant.config_entries import SOURCE_REAUTH, ConfigEntryState
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr, entity_registry as er
+from homeassistant.helpers.update_coordinator import UpdateFailed
+from homeassistant.setup import async_setup_component
 
 import custom_components.inpost_paczkomaty as integration
 from custom_components.inpost_paczkomaty.const import DOMAIN
 from custom_components.inpost_paczkomaty.exceptions import InPostApiError
 from custom_components.inpost_paczkomaty.http_client import HttpClient
 from custom_components.inpost_paczkomaty.models import HttpResponse
+from custom_components.inpost_paczkomaty.sensor import format_locker_address
 
 from .common import (
     ACCOUNT_ID,
     ACCOUNT_SLUG,
+    LATIN2_ERROR_PAGE,
     LOCKER,
     PARCELS_PATH,
     PHONE,
@@ -305,6 +311,56 @@ async def test_stale_registry_entries_are_removed(hass, fake_inpost):
     assert len(entity_ids(hass, entry)) == 14
     assert not any("gda145m" in entity_id for entity_id in entity_ids(hass, entry))
     assert len(dr.async_entries_for_config_entry(devices, entry.entry_id)) == 2
+
+
+@pytest.mark.parametrize(
+    ("locker_data", "address"),
+    [
+        (
+            {
+                "city": "Gdańsk",
+                "zip_code": "80-180",
+                "street": "Wieżycka",
+                "building": "8",
+            },
+            "Gdańsk, 80-180, Wieżycka 8",
+        ),
+        ({"city": "Gdańsk", "street": "Wieżycka"}, "Gdańsk, Wieżycka"),
+        ({"zip_code": "80-180", "building": "8"}, "80-180, 8"),
+        ({"city": "Gdańsk", "zip_code": "", "street": None, "building": ""}, "Gdańsk"),
+        ({"code": "NEW99M"}, None),
+        ({"city": "", "zip_code": "", "street": "", "building": ""}, None),
+    ],
+    ids=[
+        "complete",
+        "no-zip-no-building",
+        "no-city-no-street",
+        "city-only",
+        "typed-code",
+        "all-empty",
+    ],
+)
+def test_locker_address_is_built_from_the_parts_that_exist(locker_data, address):
+    assert format_locker_address(locker_data) == address
+
+
+async def test_locker_added_by_code_has_no_made_up_address(hass, fake_inpost):
+    """Regression: a typed-in locker showed the address ", ,  "."""
+    entry = make_entry()
+    entry.add_to_hass(hass)
+    hass.config_entries.async_update_entry(
+        entry,
+        options={"lockers": [{"code": "NEW99M"}, {"code": LOCKER, "city": "Gdańsk"}]},
+    )
+    await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    typed = f"sensor.inpost_{ACCOUNT_SLUG}_new99m"
+    assert hass.states.get(f"{typed}_address").state == "unknown"
+    assert hass.states.get(f"{typed}_description").state == "unknown"
+    assert hass.states.get(f"{typed}_locker_id").state == "NEW99M"
+    partial = f"sensor.inpost_{ACCOUNT_SLUG}_{LOCKER.lower()}"
+    assert hass.states.get(f"{partial}_address").state == "Gdańsk"
 
 
 async def test_large_parcel_lists_are_not_recorded(hass, fake_inpost, caplog):
@@ -673,6 +729,54 @@ async def test_api_failure_marks_entities_unavailable_then_recovers(
     assert coordinator.update_interval == base
 
 
+@pytest.mark.parametrize("status", [200, 502])
+async def test_undecodable_response_is_an_ordinary_failed_update(
+    hass, local_server, caplog, status
+):
+    """An error page that is not valid UTF-8 takes the normal failure path.
+
+    Runs over real aiohttp: the body is decoded by the transport, so this is
+    the one failure the fake transport cannot produce. Regression: it used to
+    surface as an unexpected exception - a traceback on every poll, no backoff.
+    """
+    server, queue = local_server
+    parcels = web.json_response({"parcels": [make_parcel(1)]})
+    garbage = web.Response(
+        status=status, body=LATIN2_ERROR_PAGE, content_type="text/html"
+    )
+    queue.extend([parcels, garbage, web.json_response({"parcels": [make_parcel(1)]})])
+
+    entry = make_entry()
+    api_url = str(server.make_url("")).rstrip("/")
+    with patch("custom_components.inpost_paczkomaty.api.API_BASE_URL", api_url):
+        await setup_entry(hass, entry)
+        assert entry.state is ConfigEntryState.LOADED
+        coordinator = entry.runtime_data
+        base = coordinator.update_interval
+        caplog.clear()
+
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+
+        assert not coordinator.last_update_success
+        assert isinstance(coordinator.last_exception, UpdateFailed)
+        assert coordinator.update_interval == base * 2  # backoff applied
+        assert hass.states.get(READY_COUNT).state == "unavailable"
+        assert "Unexpected error" not in caplog.text
+        errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+        assert len(errors) == 1  # the coordinator's one line about the outage
+        assert not errors[0].exc_info
+        assert not reauth_flows(hass)
+
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+        assert coordinator.last_update_success
+        assert coordinator.update_interval == base
+        assert hass.states.get(READY_COUNT).state == "1"
+
+        assert await hass.config_entries.async_unload(entry.entry_id)
+
+
 async def test_backoff_grows_and_is_capped(hass, fake_inpost, caplog):
     """Consecutive failures double the interval up to one hour, logging once."""
     entry = make_entry()
@@ -723,6 +827,41 @@ async def test_rate_limit_without_retry_after_uses_backoff(hass, fake_inpost):
     fake_inpost.parcels_queue = [HttpResponse(body={}, status=429)]
     await coordinator.async_refresh()
     assert coordinator.update_interval == timedelta(seconds=60)
+
+
+# =============================================================================
+# configuration.yaml
+# =============================================================================
+
+
+@pytest.mark.parametrize("option", ["update_interval_seconds", "http_timeout_seconds"])
+def test_yaml_interval_and_timeout_must_be_at_least_one(option):
+    """Zero is refused: it would switch polling off or fail every request."""
+    schema = integration.CONFIG_SCHEMA
+    for refused in (0, -1):
+        with pytest.raises(vol.Invalid):
+            schema({DOMAIN: {option: refused}})
+    assert schema({DOMAIN: {option: 1}})[DOMAIN][option] == 1
+    assert schema({DOMAIN: {option: "45"}})[DOMAIN][option] == 45
+
+
+def test_yaml_defaults_are_unchanged():
+    assert integration.CONFIG_SCHEMA({DOMAIN: {}})[DOMAIN] == {
+        "update_interval_seconds": 30,
+        "http_timeout_seconds": 30,
+        "ignored_en_route_statuses": ["CONFIRMED"],
+        "parcel_lockers_url": "https://inpost.pl/sites/default/files/points.json",
+        "show_only_own_parcels": False,
+    }
+
+
+@pytest.mark.parametrize(("seconds", "accepted"), [(0, False), (1, True)])
+async def test_yaml_with_a_zero_update_interval_is_rejected(
+    hass, fake_inpost, seconds, accepted
+):
+    """Home Assistant refuses the configuration instead of running unpolled."""
+    config = {DOMAIN: {"update_interval_seconds": seconds}}
+    assert await async_setup_component(hass, DOMAIN, config) is accepted
 
 
 # =============================================================================

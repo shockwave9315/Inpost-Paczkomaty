@@ -58,16 +58,18 @@ CONFIG_SCHEMA = vol.Schema(
     {
         DOMAIN: vol.Schema(
             {
+                # Zero would not mean "as fast as possible": it switches
+                # polling off, and a zero timeout fails every request.
                 vol.Optional(
                     CONF_UPDATE_INTERVAL, default=DEFAULT_UPDATE_INTERVAL
-                ): cv.positive_int,
+                ): vol.All(cv.positive_int, vol.Range(min=1)),
                 vol.Optional(
                     CONF_IGNORED_EN_ROUTE_STATUSES,
                     default=DEFAULT_IGNORED_EN_ROUTE_STATUSES,
                 ): vol.All(cv.ensure_list, [cv.string]),
-                vol.Optional(
-                    CONF_HTTP_TIMEOUT, default=DEFAULT_HTTP_TIMEOUT
-                ): cv.positive_int,
+                vol.Optional(CONF_HTTP_TIMEOUT, default=DEFAULT_HTTP_TIMEOUT): vol.All(
+                    cv.positive_int, vol.Range(min=1)
+                ),
                 vol.Optional(
                     CONF_PARCEL_LOCKERS_URL, default=DEFAULT_PARCEL_LOCKERS_URL
                 ): cv.url,

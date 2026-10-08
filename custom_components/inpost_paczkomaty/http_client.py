@@ -151,7 +151,11 @@ class HttpClient:
                     try:
                         body = await response.json()
                     except Exception:
-                        body = await response.text()
+                        # Not JSON (an error page, usually). Its text is only
+                        # informative, so undecodable bytes are replaced: a
+                        # response in another encoding must still be handled
+                        # by its HTTP status, not fail as a decoding error.
+                        body = await response.text(errors="replace")
 
                     _LOGGER.debug("Response status: %d", response.status)
                     return HttpResponse(

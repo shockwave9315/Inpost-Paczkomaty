@@ -20,6 +20,8 @@ PARCELS_PATH = "/v4/parcels/tracked"
 PROFILE_PATH = "/izi/app/shopping/v2/profile"
 TOKEN_PATH = "/global/oauth2/token"
 LOCKERS_URL = "https://inpost.pl/sites/default/files/points.json"
+# An error page in ISO-8859-2, sent without a charset: not valid UTF-8
+LATIN2_ERROR_PAGE = "<html>Błąd bramy - spróbuj później</html>".encode("iso-8859-2")
 
 
 def make_jwt(exp_offset: int = 7200, marker: str = "tok") -> str:

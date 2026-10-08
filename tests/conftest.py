@@ -4,6 +4,8 @@ import logging
 from unittest.mock import patch
 
 import pytest
+from aiohttp import web
+from aiohttp.test_utils import TestServer
 
 from custom_components.inpost_paczkomaty.http_client import HttpClient
 
@@ -39,6 +41,28 @@ def no_home_assistant_usage_reports(caplog):
         and "custom integration 'inpost_paczkomaty'" in record.getMessage()
     ]
     assert not reports, reports
+
+
+@pytest.fixture
+async def local_server(socket_enabled):
+    """A real HTTP server on localhost that answers with queued responses.
+
+    For the few tests that must go through aiohttp itself instead of the
+    fake transport. Yields ``(server, queue)``.
+    """
+    queue: list[web.Response] = []
+
+    async def handler(request: web.Request) -> web.Response:
+        return queue.pop(0)
+
+    app = web.Application()
+    app.router.add_route("*", "/{path:.*}", handler)
+    server = TestServer(app)
+    await server.start_server()
+    try:
+        yield server, queue
+    finally:
+        await server.close()
 
 
 @pytest.fixture

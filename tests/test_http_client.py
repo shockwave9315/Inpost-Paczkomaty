@@ -5,10 +5,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
 import pytest
+from aiohttp import web
 
 from custom_components.inpost_paczkomaty.exceptions import InPostApiError
 from custom_components.inpost_paczkomaty.http_client import HttpClient
 from custom_components.inpost_paczkomaty.models import HttpResponse
+
+from .common import LATIN2_ERROR_PAGE
 
 
 class TestHttpClient:
@@ -276,7 +279,7 @@ class TestHttpClient:
         async def raise_json_error():
             raise ValueError("Invalid JSON")
 
-        async def return_text():
+        async def return_text(errors="strict"):
             return "<html>Not JSON</html>"
 
         mock_response.json = raise_json_error
@@ -326,3 +329,50 @@ class TestHttpClient:
                 await client._request("GET", "https://example.com")
 
         await client.close()
+
+
+# =============================================================================
+# Real aiohttp against a local server
+# =============================================================================
+
+
+@pytest.mark.parametrize("status", [200, 401, 429, 503])
+async def test_undecodable_body_is_returned_with_its_status(local_server, status):
+    """A body that is not valid UTF-8 never fails the request.
+
+    Regression: the text fallback decoded strictly, so such a response raised
+    UnicodeDecodeError out of the transport and its HTTP status was lost.
+    """
+    server, queue = local_server
+    with pytest.raises(UnicodeDecodeError):
+        LATIN2_ERROR_PAGE.decode("utf-8")  # the premise of this test
+    queue.append(
+        web.Response(
+            status=status,
+            body=LATIN2_ERROR_PAGE,
+            content_type="text/html",
+            headers={"Retry-After": "120"},
+        )
+    )
+    client = HttpClient()
+    try:
+        response = await client.get(str(server.make_url("/v4/parcels/tracked")))
+    finally:
+        await client.close()
+
+    assert response.status == status
+    assert isinstance(response.body, str)
+    assert "bramy" in response.body  # the readable part survives
+    assert response.headers["Retry-After"] == "120"
+
+
+async def test_json_body_still_wins_over_text(local_server):
+    server, queue = local_server
+    queue.append(web.json_response({"parcels": []}))
+    client = HttpClient()
+    try:
+        response = await client.get(str(server.make_url("/")))
+    finally:
+        await client.close()
+
+    assert response.body == {"parcels": []}

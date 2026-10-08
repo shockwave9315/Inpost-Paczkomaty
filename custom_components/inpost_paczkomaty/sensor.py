@@ -68,7 +68,7 @@ async def async_setup_entry(
                 locker_id,
                 "description",
                 "Description",
-                locker_data.get("description", ""),
+                locker_data.get("description") or None,
             )
         )
         entities.append(
@@ -77,16 +77,26 @@ async def async_setup_entry(
                 locker_id,
                 "address",
                 "Address",
-                "{}, {}, {} {}".format(
-                    locker_data.get("city", ""),
-                    locker_data.get("zip_code", ""),
-                    locker_data.get("street", ""),
-                    locker_data.get("building", ""),
-                ),
+                format_locker_address(locker_data),
             )
         )
 
     async_add_entities(entities)
+
+
+def format_locker_address(locker_data: dict[str, Any]) -> str | None:
+    """Return "city, zip code, street building" from the parts that are known.
+
+    A locker added by typing its code has no address data at all; the result
+    is then None (the sensor is "unknown") rather than bare separators.
+    """
+    street = " ".join(
+        part
+        for part in (locker_data.get("street"), locker_data.get("building"))
+        if part
+    )
+    parts = (locker_data.get("city"), locker_data.get("zip_code"), street)
+    return ", ".join(part for part in parts if part) or None
 
 
 # =============================================================================
@@ -237,9 +247,14 @@ class ParcelLockerStaticSensor(InPostLockerEntityMixin, SensorEntity):
     _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(
-        self, entry: ConfigEntry, locker_id: str, key: str, name: str, value: str
+        self,
+        entry: ConfigEntry,
+        locker_id: str,
+        key: str,
+        name: str,
+        value: str | None,
     ) -> None:
-        """Initialize the sensor with its constant value."""
+        """Initialize the sensor with its constant value (None if not known)."""
         self._init_locker(entry, locker_id, key)
         self._attr_name = name
         self._attr_native_value = value

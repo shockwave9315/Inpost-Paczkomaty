@@ -436,6 +436,7 @@ For each configured locker (identified by `[LOCKER_ID]`), the following entities
 
 | Symptom | What it means / what to do |
 |:--------|:---------------------------|
+| "Could not read your InPost profile" during login | The login itself worked, but the profile request failed (usually a temporary InPost problem). Choose **Try again** to repeat only that request, or **Sign in again** to start a new login. |
 | A **re-authentication** request appears | InPost rejected the stored login (for example after logging out all devices). Open it, sign in again to the **same** account and paste the redirect address. Entities and settings are kept. |
 | Entities are **unavailable** | The last update failed (InPost unreachable, rate limited, unexpected response). The integration retries on its own with an increasing delay of up to one hour; the reason is logged once when the outage starts. |
 | `invalid_parcels_count` is above 0 | InPost returned a parcel the integration could not read. The other parcels are unaffected. The log names the field at fault - please include it in an issue. |

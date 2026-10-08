@@ -12,7 +12,7 @@ from typing import Optional
 import aiohttp
 from aiohttp.resolver import ThreadedResolver
 
-from .exceptions import InPostApiError
+from .exceptions import RequestTimeoutError
 from .models import HttpResponse
 from .utils import redact_headers
 
@@ -162,7 +162,7 @@ class HttpClient:
                     )
         except TimeoutError as e:
             _LOGGER.warning("Request timed out")
-            raise InPostApiError("Request timed out") from e
+            raise RequestTimeoutError("Request timed out") from e
         except Exception as e:
             # Callers decide how to report the failure; avoid duplicate ERRORs.
             _LOGGER.debug("Error making %s request to %s: %r", method, url, e)

@@ -7,9 +7,10 @@
     },
     "error": {
       "invalid_auth_response": "Could not read a valid authorization code. Make sure you copied the full redirect URL after logging in, then try again.",
-      "cannot_fetch_profile": "Login succeeded, but the phone number could not be read from your InPost profile. Submit the form again to retry.",
       "cannot_fetch_lockers": "Failed to fetch parcel lockers list. You can type locker codes manually or configure them later in options.",
-      "unknown_locker": "At least one of the entered codes is not on InPost's public list of parcel lockers (the list may be out of date). Check the codes for typos; submit again to add them anyway."
+      "unknown_locker": "At least one of the entered codes is not on InPost's public list of parcel lockers (the list may be out of date). Check the codes for typos; submit again to add them anyway.",
+      "auth_rejected": "InPost did not accept the new login. Sign in again using the link below.",
+      "cannot_connect": "Could not reach InPost to complete the login. Try again in a moment - the same redirect address can be submitted again."
     },
     "step": {
       "user": {
@@ -31,6 +32,14 @@
         "description": "Choose the parcel lockers you want to monitor. The list shows the lockers nearest to your home location; to add any other locker, type its code (for example GDA117M) and press Enter.",
         "data": {
           "lockers": "Parcel Lockers"
+        }
+      },
+      "profile_failed": {
+        "title": "Could not read your InPost profile",
+        "description": "You are signed in, but the account's phone number could not be read from the InPost profile. InPost may be temporarily unavailable.",
+        "menu_options": {
+          "retry_profile": "Try again",
+          "restart_login": "Sign in again"
         }
       }
     }

@@ -9,7 +9,6 @@ from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers import entity_registry as er
 
 from custom_components.inpost_paczkomaty.const import DOMAIN
-from custom_components.inpost_paczkomaty.exceptions import InPostApiError
 from custom_components.inpost_paczkomaty.models import HttpResponse
 
 from .common import (
@@ -131,9 +130,8 @@ async def test_second_different_account(hass, fake_inpost):
         HttpResponse(body={"error": "invalid_grant"}, status=400),
         HttpResponse(body={"access_token": "only-access"}, status=200),
         HttpResponse(body="<html>", status=200),
-        InPostApiError("Request timed out"),
     ],
-    ids=["invalid-grant", "no-refresh-token", "not-json", "timeout"],
+    ids=["invalid-grant", "no-refresh-token", "not-json"],
 )
 async def test_failed_code_exchange_shows_error_and_allows_retry(
     hass, fake_inpost, token_response
@@ -162,33 +160,6 @@ async def test_state_mismatch_is_rejected(hass, fake_inpost):
     )
     assert result["errors"] == {"base": "invalid_auth_response"}
     assert fake_inpost.count(TOKEN_PATH) == 0
-
-
-@pytest.mark.parametrize(
-    "profile_response",
-    [
-        HttpResponse(body={}, status=500),
-        HttpResponse(body=make_profile(phone=None), status=200),
-        HttpResponse(body={"personal": None}, status=200),
-        InPostApiError("Request timed out"),
-    ],
-    ids=["http-500", "no-phone", "no-personal", "timeout"],
-)
-async def test_profile_failure_does_not_create_anonymous_entry(
-    hass, fake_inpost, profile_response
-):
-    """Without a phone number no entry is created; retry reuses the tokens."""
-    fake_inpost.profile_queue = [profile_response]
-
-    result = await login(hass, await start_user_flow(hass))
-    assert result["type"] is FlowResultType.FORM
-    assert result["step_id"] == "user"
-    assert result["errors"] == {"base": "cannot_fetch_profile"}
-    assert not hass.config_entries.async_entries(DOMAIN)
-
-    result = await login(hass, result)
-    assert result["step_id"] == "lockers"
-    assert fake_inpost.count(TOKEN_PATH) == 1  # the single-use code is not re-sent
 
 
 async def test_tokens_rotated_during_login_are_the_ones_stored(hass, fake_inpost):

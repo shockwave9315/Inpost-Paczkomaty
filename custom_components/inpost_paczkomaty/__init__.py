@@ -151,13 +151,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         CONF_SHOW_ONLY_OWN_PARCELS, DEFAULT_SHOW_ONLY_OWN_PARCELS
     )
 
+    client_is_current = True
+
+    @callback
+    def retire_client() -> None:
+        """Stop this client from writing tokens once the entry moves on."""
+        nonlocal client_is_current
+        client_is_current = False
+
+    entry.async_on_unload(retire_client)
+
     @callback
     def persist_refreshed_tokens(tokens: AuthTokens) -> None:
         """Persist refreshed OAuth tokens in the config entry.
 
         No update listener is registered for this entry, so storing the
-        tokens never triggers a reload.
+        tokens never triggers a reload. A client that has been unloaded (for
+        example replaced after re-authentication) must not overwrite the
+        tokens its successor works with.
         """
+        if not client_is_current:
+            return
         hass.config_entries.async_update_entry(
             entry,
             data={

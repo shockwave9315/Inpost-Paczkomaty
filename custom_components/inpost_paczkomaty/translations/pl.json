@@ -7,9 +7,10 @@
     },
     "error": {
       "invalid_auth_response": "Nie udało się odczytać prawidłowego kodu autoryzacji. Upewnij się, że skopiowałeś pełny adres URL po zalogowaniu, i spróbuj ponownie.",
-      "cannot_fetch_profile": "Logowanie powiodło się, ale nie udało się odczytać numeru telefonu z profilu InPost. Wyślij formularz ponownie, aby spróbować jeszcze raz.",
       "cannot_fetch_lockers": "Nie udało się pobrać listy paczkomatów. Możesz wpisać kody paczkomatów ręcznie lub skonfigurować je później w opcjach.",
-      "unknown_locker": "Co najmniej jednego z podanych kodów nie ma na publicznej liście paczkomatów InPost (lista może być nieaktualna). Sprawdź, czy w kodach nie ma literówek; wyślij ponownie, aby dodać je mimo to."
+      "unknown_locker": "Co najmniej jednego z podanych kodów nie ma na publicznej liście paczkomatów InPost (lista może być nieaktualna). Sprawdź, czy w kodach nie ma literówek; wyślij ponownie, aby dodać je mimo to.",
+      "auth_rejected": "InPost nie zaakceptował nowego logowania. Zaloguj się ponownie, korzystając z poniższego linku.",
+      "cannot_connect": "Nie udało się połączyć z InPost, aby dokończyć logowanie. Spróbuj ponownie za chwilę - ten sam adres przekierowania można wysłać jeszcze raz."
     },
     "step": {
       "user": {
@@ -31,6 +32,14 @@
         "description": "Wybierz paczkomaty, które chcesz monitorować. Lista zawiera paczkomaty najbliższe lokalizacji domu; aby dodać dowolny inny, wpisz jego kod (np. GDA117M) i naciśnij Enter.",
         "data": {
           "lockers": "Paczkomaty"
+        }
+      },
+      "profile_failed": {
+        "title": "Nie udało się odczytać profilu InPost",
+        "description": "Logowanie powiodło się, ale nie udało się odczytać numeru telefonu z profilu InPost. Usługa InPost może być chwilowo niedostępna.",
+        "menu_options": {
+          "retry_profile": "Spróbuj ponownie",
+          "restart_login": "Zaloguj się ponownie"
         }
       }
     }

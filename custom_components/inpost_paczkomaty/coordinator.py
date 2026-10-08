@@ -4,8 +4,8 @@ import logging
 from datetime import timedelta
 from typing import Optional
 
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.config_entries import SOURCE_REAUTH, ConfigEntry
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
@@ -49,6 +49,22 @@ class InpostDataCoordinator(DataUpdateCoordinator[ParcelsSummary]):
         self.api_client = api_client
         self._base_interval = timedelta(seconds=update_interval_seconds)
         self._consecutive_failures = 0
+        self._reauth_requested = False
+
+    @callback
+    def _async_dismiss_reauth(self) -> None:
+        """Withdraw a reauth request once the stored credentials work again.
+
+        A rejection can be followed by a successful update (for example when a
+        later token refresh goes through); the pending request would then ask
+        the user to sign in although nothing is wrong.
+        """
+        if self.config_entry is None:
+            return
+        for flow in self.config_entry.async_get_active_flows(
+            self.hass, {SOURCE_REAUTH}
+        ):
+            self.hass.config_entries.flow.async_abort(flow["flow_id"])
 
     def _apply_backoff(self, retry_after: Optional[float] = None) -> None:
         """Slow polling down after a failed update.
@@ -79,6 +95,7 @@ class InpostDataCoordinator(DataUpdateCoordinator[ParcelsSummary]):
             data = await self.api_client.get_parcels()
         except ApiAuthError as err:
             self._apply_backoff()
+            self._reauth_requested = True
             raise ConfigEntryAuthFailed(
                 f"InPost rejected the stored credentials: {err}"
             ) from err
@@ -94,4 +111,7 @@ class InpostDataCoordinator(DataUpdateCoordinator[ParcelsSummary]):
 
         self._consecutive_failures = 0
         self.update_interval = self._base_interval
+        if self._reauth_requested:
+            self._reauth_requested = False
+            self._async_dismiss_reauth()
         return data

@@ -180,6 +180,12 @@ class RateLimitError(InPostApiError):
     pass
 
 
+class RequestTimeoutError(InPostApiError):
+    """Raised when a request does not complete within the timeout."""
+
+    pass
+
+
 class ServerError(InPostApiError):
     """Raised when server encounters an error."""
 

@@ -40,7 +40,14 @@ from .const import (
     OAUTH_REDIRECT_URI,
 )
 from .entity import get_tracked_lockers
-from .exceptions import ApiClientError, InPostApiError
+from .exceptions import (
+    ApiAuthError,
+    ApiClientError,
+    InPostApiError,
+    RateLimitError,
+    RequestTimeoutError,
+    ServerError,
+)
 from .inpost_auth_flow import InpostAuth
 from .models import AuthTokens, UserProfile
 from .utils import haversine
@@ -250,7 +257,21 @@ def resolve_selected_lockers(
 
 
 class InPostConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    """Handle InPost Paczkomaty config flow."""
+    """Handle InPost Paczkomaty config flow.
+
+    Authentication state is explicit and lives in three attributes; at most
+    one of the first two is set at any time:
+
+    * ``_auth``   - a login is pending: the PKCE session behind the login URL
+      currently shown to the user.
+    * ``_tokens`` - a login completed, but the account is not identified yet
+      (the profile request is still to be made or may be retried).
+    * ``_data``   - filled only once the account is identified; this is what
+      ends up in the config entry.
+
+    The login form always exchanges the redirect the user submitted. Nothing
+    is ever skipped because "a token already exists".
+    """
 
     VERSION = 1
 
@@ -258,15 +279,28 @@ class InPostConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Initialize the config flow."""
         self._data: dict = {}
         self._auth: InpostAuth | None = None
+        self._tokens: AuthTokens | None = None
         self._profile: UserProfile | None = None
         self._lockers: dict[str, SimpleParcelLocker] = {}
         self._confirmed_unknown: set[str] = set()
 
-    async def _cleanup_auth(self) -> None:
-        """Clean up the authentication session."""
+    # -------------------------------------------------------------------------
+    # Auth state
+    # -------------------------------------------------------------------------
+
+    async def _async_reset_auth_state(self) -> None:
+        """Return to the "no login yet" state.
+
+        The single place where authentication state is discarded: the PKCE
+        session, tokens that were not (or could not be) validated and anything
+        derived from them. The next login form gets a fresh PKCE session.
+        """
         if self._auth:
             await self._auth.close()
-            self._auth = None
+        self._auth = None
+        self._tokens = None
+        self._profile = None
+        self._data = {}
 
     @callback
     def async_remove(self) -> None:
@@ -276,30 +310,85 @@ class InPostConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._auth = None
 
     def _ensure_auth(self) -> InpostAuth:
-        """Return the auth handler, keeping PKCE stable across form renders."""
+        """Return the pending login, keeping PKCE stable across form renders."""
         if self._auth is None:
             self._auth = InpostAuth(language=self.hass.config.language)
         return self._auth
+
+    @property
+    def _login_step_id(self) -> str:
+        """Return the step that shows the login form for this flow."""
+        return (
+            "reauth_confirm" if self.source == config_entries.SOURCE_REAUTH else "user"
+        )
+
+    def _show_login_form(self, errors: dict[str, str] | None = None):
+        """Show the browser login form for the pending login."""
+        return self.async_show_form(
+            step_id=self._login_step_id,
+            data_schema=REDIRECT_SCHEMA,
+            errors=errors or {},
+            description_placeholders={
+                "login_url": self._ensure_auth().build_login_url(),
+                "callback_url": f"{OAUTH_REDIRECT_URI}?code=...",
+            },
+        )
+
+    # -------------------------------------------------------------------------
+    # Login: redirect -> tokens -> identified account
+    # -------------------------------------------------------------------------
+
+    async def _async_exchange_redirect(self, user_input: dict[str, Any]) -> str | None:
+        """Exchange the submitted redirect for tokens.
+
+        On failure the pending login (PKCE session) is kept, so the address
+        can be pasted again or the login repeated with the same URL.
+
+        Returns:
+            None on success, otherwise the error key to show in the form.
+        """
+        auth = self._ensure_auth()
+        try:
+            auth_code = auth.extract_authorization_code(user_input[CONF_REDIRECT_URL])
+            tokens = await auth.exchange_code_for_tokens(auth_code)
+        except (
+            RequestTimeoutError,
+            ServerError,
+            RateLimitError,
+            aiohttp.ClientError,
+            TimeoutError,
+            OSError,
+        ) as err:
+            _LOGGER.warning("Could not reach InPost to complete the login: %s", err)
+            return "cannot_connect"
+        except (InPostApiError, ValueError) as err:
+            # Unreadable redirect, state mismatch or a code InPost rejected
+            _LOGGER.warning("InPost authentication failed: %s", err)
+            return "invalid_auth_response"
+
+        # The pending login is consumed; only the new tokens remain.
+        await self._async_reset_auth_state()
+        self._tokens = tokens
+        return None
 
     async def _async_fetch_profile(self) -> UserProfile:
         """Fetch the profile of the account that has just logged in.
 
         Raises:
-            ApiClientError: If the profile cannot be fetched.
+            ApiAuthError: If InPost does not accept the new tokens.
+            ApiClientError: If the profile cannot be fetched for another reason.
         """
+        assert self._tokens is not None
         domain_config = self.hass.data.get(DOMAIN) or {}
 
         def keep_refreshed_tokens(tokens: AuthTokens) -> None:
-            """Store tokens renewed while fetching, so the entry gets live ones."""
-            self._data[CONF_ACCESS_TOKEN] = tokens.access_token
-            self._data[CONF_REFRESH_TOKEN] = tokens.refresh_token
-            self._data[CONF_TOKEN_EXPIRES_IN] = tokens.expires_in
-            self._data[CONF_TOKEN_TYPE] = tokens.token_type
+            """Track tokens renewed while fetching, so the entry gets live ones."""
+            self._tokens = tokens
 
         api_client = InPostApiClient(
             self.hass,
-            access_token=self._data.get(CONF_ACCESS_TOKEN),
-            refresh_token=self._data.get(CONF_REFRESH_TOKEN),
+            access_token=self._tokens.access_token,
+            refresh_token=self._tokens.refresh_token,
             on_token_refresh=keep_refreshed_tokens,
             http_timeout=domain_config.get(CONF_HTTP_TIMEOUT, DEFAULT_HTTP_TIMEOUT),
         )
@@ -308,65 +397,84 @@ class InPostConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         finally:
             await api_client.close()
 
-    async def _async_login(self, user_input: dict[str, Any]) -> str | None:
-        """Exchange the pasted redirect for tokens and identify the account.
+    async def _async_identify_account(self):
+        """Identify the account behind the new tokens and continue the flow.
 
         The account phone number is required: it identifies the account, so
         the same one cannot be added twice.
 
-        Returns:
-            None on success, otherwise the error key to show in the form.
+        * InPost rejects the tokens (permanent): they are discarded and a new
+          login is requested.
+        * Anything else (transient, or a profile without a phone number): the
+          tokens are kept and the user chooses between retrying the profile
+          request and signing in again.
         """
-        if CONF_ACCESS_TOKEN not in self._data:
-            auth = self._ensure_auth()
-            try:
-                auth_code = auth.extract_authorization_code(
-                    user_input[CONF_REDIRECT_URL]
-                )
-                tokens = await auth.exchange_code_for_tokens(auth_code)
-            except (
-                InPostApiError,
-                ValueError,
-                aiohttp.ClientError,
-                TimeoutError,
-                OSError,
-            ) as err:
-                _LOGGER.warning("InPost authentication failed: %s", err)
-                return "invalid_auth_response"
+        if self._tokens is None:
+            return self._show_login_form()
 
-            self._data[CONF_ACCESS_TOKEN] = tokens.access_token
-            self._data[CONF_REFRESH_TOKEN] = tokens.refresh_token
-            self._data[CONF_TOKEN_EXPIRES_IN] = tokens.expires_in
-            self._data[CONF_TOKEN_TYPE] = tokens.token_type
-            await self._cleanup_auth()
-
-        # The authorization code is single-use. If the profile request fails
-        # the tokens are kept, so submitting the form again only retries it.
         try:
-            self._profile = await self._async_fetch_profile()
+            profile = await self._async_fetch_profile()
+        except ApiAuthError as err:
+            _LOGGER.warning("InPost rejected the tokens of the new login: %s", err)
+            await self._async_reset_auth_state()
+            return self._show_login_form({"base": "auth_rejected"})
         except ApiClientError as err:
             _LOGGER.warning("Failed to fetch InPost profile: %s", err)
-            return "cannot_fetch_profile"
+            return self._show_profile_failed()
 
-        personal = self._profile.personal
+        personal = profile.personal
         if not personal or not personal.phone_number:
             _LOGGER.warning("InPost profile does not contain a phone number")
-            return "cannot_fetch_profile"
+            return self._show_profile_failed()
 
-        self._data[ENTRY_PHONE_NUMBER_CONFIG] = personal.phone_number
-        return None
+        self._profile = profile
+        self._data = {
+            CONF_ACCESS_TOKEN: self._tokens.access_token,
+            CONF_REFRESH_TOKEN: self._tokens.refresh_token,
+            CONF_TOKEN_EXPIRES_IN: self._tokens.expires_in,
+            CONF_TOKEN_TYPE: self._tokens.token_type,
+            ENTRY_PHONE_NUMBER_CONFIG: personal.phone_number,
+        }
 
-    def _show_login_form(self, step_id: str, errors: dict[str, str]):
-        """Show the browser login form."""
-        return self.async_show_form(
-            step_id=step_id,
-            data_schema=REDIRECT_SCHEMA,
-            errors=errors,
-            description_placeholders={
-                "login_url": self._ensure_auth().build_login_url(),
-                "callback_url": f"{OAUTH_REDIRECT_URI}?code=...",
-            },
+        if self.source == config_entries.SOURCE_REAUTH:
+            return self._async_finish_reauth(personal.phone_number)
+        return await self._async_finish_user(personal.phone_number)
+
+    async def _async_step_login(self, user_input: dict[str, Any] | None):
+        """Show the login form or process the redirect pasted into it."""
+        if user_input is None:
+            if self._tokens is not None:
+                # Showing a login means the earlier, unvalidated one is given up
+                await self._async_reset_auth_state()
+            return self._show_login_form()
+        error = await self._async_exchange_redirect(user_input)
+        if error is not None:
+            return self._show_login_form({"base": error})
+        return await self._async_identify_account()
+
+    def _show_profile_failed(self):
+        """Offer to retry the profile request or to sign in again."""
+        return self.async_show_menu(
+            step_id="profile_failed",
+            menu_options=["retry_profile", "restart_login"],
         )
+
+    async def async_step_profile_failed(self, user_input=None):
+        """Show the choices after a failed profile request."""
+        return self._show_profile_failed()
+
+    async def async_step_retry_profile(self, user_input=None):
+        """Repeat the profile request with the tokens already obtained."""
+        return await self._async_identify_account()
+
+    async def async_step_restart_login(self, user_input=None):
+        """Discard the tokens and start over with a new login."""
+        await self._async_reset_auth_state()
+        return self._show_login_form()
+
+    # -------------------------------------------------------------------------
+    # Steps
+    # -------------------------------------------------------------------------
 
     async def async_step_user(self, user_input=None):
         """Handle the initial step - external browser login.
@@ -377,24 +485,19 @@ class InPostConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         URL (or the code) back here and we exchange it for tokens using our own
         PKCE ``code_verifier``.
         """
-        errors: dict[str, str] = {}
+        return await self._async_step_login(user_input)
 
-        if user_input is not None:
-            error = await self._async_login(user_input)
-            if error is None:
-                phone_number = self._data[ENTRY_PHONE_NUMBER_CONFIG]
-                await self.async_set_unique_id(phone_number)
-                self._abort_if_unique_id_configured()
-                # Entries created before unique IDs were introduced
-                if any(
-                    entry.data.get(ENTRY_PHONE_NUMBER_CONFIG) == phone_number
-                    for entry in self._async_current_entries()
-                ):
-                    return self.async_abort(reason="already_configured")
-                return await self.async_step_lockers()
-            errors["base"] = error
-
-        return self._show_login_form("user", errors)
+    async def _async_finish_user(self, phone_number: str):
+        """Continue a new-account flow once the account is identified."""
+        await self.async_set_unique_id(phone_number)
+        self._abort_if_unique_id_configured()
+        # Entries created before unique IDs were introduced
+        if any(
+            entry.data.get(ENTRY_PHONE_NUMBER_CONFIG) == phone_number
+            for entry in self._async_current_entries()
+        ):
+            return self.async_abort(reason="already_configured")
+        return await self.async_step_lockers()
 
     async def async_step_reauth(self, entry_data):
         """Start re-authentication after InPost rejected the stored tokens."""
@@ -402,31 +505,30 @@ class InPostConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_step_reauth_confirm(self, user_input=None):
         """Log in again and store fresh tokens in the existing entry."""
-        errors: dict[str, str] = {}
+        return await self._async_step_login(user_input)
+
+    def _async_finish_reauth(self, phone_number: str):
+        """Store the new tokens in the entry being re-authenticated.
+
+        The entry is only written here, after the account has been verified to
+        be the same one; every failure before this point leaves it untouched.
+        """
         entry = self._get_reauth_entry()
-
-        if user_input is not None:
-            error = await self._async_login(user_input)
-            if error is None:
-                phone_number = self._data[ENTRY_PHONE_NUMBER_CONFIG]
-                expected = entry.data.get(ENTRY_PHONE_NUMBER_CONFIG)
-                if expected and expected != phone_number:
-                    return self.async_abort(reason="wrong_account")
-                if any(
-                    other.entry_id != entry.entry_id
-                    and phone_number
-                    in (other.unique_id, other.data.get(ENTRY_PHONE_NUMBER_CONFIG))
-                    for other in self._async_current_entries()
-                ):
-                    return self.async_abort(reason="already_configured")
-                return self.async_update_reload_and_abort(
-                    entry,
-                    unique_id=phone_number,
-                    data_updates=self._data,
-                )
-            errors["base"] = error
-
-        return self._show_login_form("reauth_confirm", errors)
+        expected = entry.data.get(ENTRY_PHONE_NUMBER_CONFIG)
+        if expected and expected != phone_number:
+            return self.async_abort(reason="wrong_account")
+        if any(
+            other.entry_id != entry.entry_id
+            and phone_number
+            in (other.unique_id, other.data.get(ENTRY_PHONE_NUMBER_CONFIG))
+            for other in self._async_current_entries()
+        ):
+            return self.async_abort(reason="already_configured")
+        return self.async_update_reload_and_abort(
+            entry,
+            unique_id=phone_number,
+            data_updates=self._data,
+        )
 
     def _entry_title(self) -> str:
         """Build the entry title from the account phone number."""

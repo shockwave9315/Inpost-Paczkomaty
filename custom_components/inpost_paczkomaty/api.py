@@ -228,17 +228,18 @@ class InPostApiClient:
         Raises:
             ApiClientError: If token refresh fails.
         """
-        if not self._access_token:
+        if not self._access_token and not self._refresh_token:
+            # Unauthenticated client (public endpoints only)
             return
 
-        if not is_token_expiring_soon(self._access_token):
+        if self._access_token and not is_token_expiring_soon(self._access_token):
             return
 
         if not self._refresh_token:
             _LOGGER.warning("Access token is expiring but no refresh token available")
             return
 
-        _LOGGER.debug("Access token is expiring soon, refreshing")
+        _LOGGER.debug("Access token is missing or expiring soon, refreshing")
         await self.refresh_access_token()
 
     async def refresh_access_token(self) -> AuthTokens:

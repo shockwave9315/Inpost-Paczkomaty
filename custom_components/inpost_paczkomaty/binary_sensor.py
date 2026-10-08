@@ -1,71 +1,68 @@
-import logging
+"""Binary sensors for InPost Paczkomaty."""
+
+from __future__ import annotations
 
 from homeassistant.components.binary_sensor import (
-    BinarySensorEntity,
     BinarySensorDeviceClass,
+    BinarySensorEntity,
 )
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant
 
-from .const import ENTRY_PHONE_NUMBER_CONFIG
-from .sensor import ParcelLockerDeviceSensor
-
-_LOGGER = logging.getLogger(__name__)
+from .coordinator import InpostDataCoordinator
+from .entity import InPostLockerEntity, get_tracked_lockers
 
 
-async def async_setup_entry(hass, entry, async_add_entities):
-    tracked_lockers = entry.options.get("lockers", [])
-    phone_number = entry.data.get(ENTRY_PHONE_NUMBER_CONFIG)
+async def async_setup_entry(
+    hass: HomeAssistant, entry: ConfigEntry, async_add_entities
+) -> None:
+    """Set up binary sensors for every tracked parcel locker."""
+    coordinator: InpostDataCoordinator = entry.runtime_data
 
-    coordinator = entry.runtime_data
-
-    _LOGGER.debug("Creating binary sensors for lockers %s", tracked_lockers)
-
-    await coordinator.async_config_entry_first_refresh()
-
-    # Parse lockers - handle both old format (list of codes) and new format (list of dicts)
-    locker_ids = []
-    if tracked_lockers:
-        if isinstance(tracked_lockers[0], dict):
-            # New format: [{"code": "GDA117M", ...}]
-            locker_ids = [locker["code"] for locker in tracked_lockers]
-        else:
-            # Old format: ["GDA117M"] - backwards compatibility
-            locker_ids = tracked_lockers
-
-    entities = []
-    for locker_id in locker_ids:
+    entities: list[BinarySensorEntity] = []
+    for locker_id in get_tracked_lockers(entry):
         entities.append(
             ParcelLockerBinarySensor(
-                coordinator,
-                phone_number,
-                locker_id,
-                "en_route",
-                lambda data, locker_id: getattr(
-                    data.en_route.get(locker_id), "count", 0
-                )
-                > 0,
+                coordinator, entry, locker_id, "en_route", "Parcels en route"
             )
         )
         entities.append(
             ParcelLockerBinarySensor(
-                coordinator,
-                phone_number,
-                locker_id,
-                "ready_for_pickup_count",
-                lambda data, locker_id: getattr(
-                    data.ready_for_pickup.get(locker_id), "count", 0
-                )
-                > 0,
+                coordinator, entry, locker_id, "ready_for_pickup", "Ready for pickup"
             )
         )
 
     async_add_entities(entities)
 
 
-class ParcelLockerBinarySensor(BinarySensorEntity, ParcelLockerDeviceSensor):
-    @property
-    def is_on(self) -> bool:
-        return bool(self._sensor_data)
+class ParcelLockerBinarySensor(InPostLockerEntity, BinarySensorEntity):
+    """On when the locker has at least one parcel in the given group."""
+
+    _attr_device_class = BinarySensorDeviceClass.OCCUPANCY
+
+    def __init__(
+        self,
+        coordinator: InpostDataCoordinator,
+        entry: ConfigEntry,
+        locker_id: str,
+        group: str,
+        name: str,
+    ) -> None:
+        """Initialize the binary sensor.
+
+        Args:
+            coordinator: Data coordinator.
+            entry: Config entry of the account.
+            locker_id: Parcel locker code.
+            group: ParcelsSummary attribute to read (en_route/ready_for_pickup).
+            name: Entity name relative to the locker device.
+        """
+        super().__init__(coordinator, entry, locker_id, group)
+        self._group = group
+        self._attr_name = name
 
     @property
-    def device_class(self):
-        return BinarySensorDeviceClass.OCCUPANCY
+    def is_on(self) -> bool:
+        """Return True if any parcel of the group is assigned to the locker."""
+        locker = getattr(self.coordinator.data, self._group).get(self._locker_id)
+        return locker is not None and locker.count > 0

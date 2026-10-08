@@ -3,8 +3,8 @@
 Track [InPost](https://inpost.pl/) parcels sent to a *Paczkomat®* (parcel locker) and monitor the occupancy of your
 configured lockers.
 
-> **Note:** The integration only tracks **en route** or **available for pickup** parcels. Parcels that have already been
-> picked up or are otherwise delivered are ignored.
+> **Note:** The integration tracks parcels that are **en route** or **available for pickup**. Parcels that have already
+> been picked up, returned or cancelled only appear in the all parcels count (see [Parcel Statuses](#parcel-statuses)).
 
 ---
 
@@ -22,6 +22,11 @@ configured lockers.
 >   the integration.
 > * If InPost stops accepting the stored login, Home Assistant now asks you to **re-authenticate** instead of
 >   requiring the integration to be removed and added again.
+> * Every InPost parcel status is now [classified](#parcel-statuses). A parcel no longer disappears from the counts
+>   while it is in a sorting centre or after the pickup reminder, so the "en route" and "ready for pickup" numbers can
+>   be higher than before. A status the integration does not know is reported in `unknown_parcels_count`.
+> * In `configuration.yaml`, `update_interval_seconds` and `http_timeout_seconds` must be at least `1`. A value of `0`
+>   used to switch polling off silently; it is now rejected when Home Assistant starts.
 
 ## How It Works
 

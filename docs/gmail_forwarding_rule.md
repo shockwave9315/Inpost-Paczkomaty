@@ -1,2 +1,0 @@
-### GMAIL forwarding rule setup
-

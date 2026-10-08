@@ -8,20 +8,17 @@ configured lockers.
 
 ---
 
-~~~
-⚠️ Breaking Change: login flow updated (captcha support)
-
-> Important: Existing users will need to re-authenticate the integration after updating.
-
-InPost now requires a captcha during login, so credentials can no longer be submitted directly from Home Assistant.
-Authentication is now completed in your browser and the resulting authorization code is pasted back into Home Assistant.
-
-➡️ Migration Steps
-
-1. Remove the existing InPost Paczkomaty integration from Home Assistant
-2. Add the integration again and complete the new browser-based login flow
-3. Re-select your preferred parcel lockers
-~~~~
+> **Upgrading to 0.5.0**
+>
+> * Requires Home Assistant **2025.1** or newer (tested on 2026.10).
+> * Entities are re-created under a new internal identity. Entity IDs follow the scheme documented
+>   [below](#entities); on installations created with Home Assistant 2026.x the per-locker IDs change from
+>   `sensor.paczkomat_<locker>_inpost_<phone>_<locker>_...` to `sensor.inpost_<phone>_<locker>_...`, and the two binary
+>   sensors are now named `..._parcels_en_route` and `..._ready_for_pickup`. Update dashboards and automations that
+>   reference the old IDs. The config entry, tokens and selected lockers are kept - there is no need to remove the
+>   integration.
+> * If InPost stops accepting the stored login, Home Assistant now asks you to **re-authenticate** instead of
+>   requiring the integration to be removed and added again.
 
 ## How It Works
 
@@ -36,7 +33,11 @@ Authentication is now completed in your browser and the resulting authorization 
    returned authorization code for API tokens (access token, refresh token, etc.), which are stored locally on your HA
    instance.
 3. **Polling:** Home Assistant polls the InPost API every **30 seconds** (configurable) to retrieve the latest updates on your
-   parcels.
+   parcels. When a request fails, the interval doubles after each consecutive failure (up to one hour) and returns to
+   the configured value after the first success. An HTTP 429 response is honoured, including its `Retry-After` delay.
+4. **Token refresh:** The access token is renewed automatically and the new tokens are saved, so they survive a
+   restart. If InPost rejects the refresh token, a **re-authentication** request appears in *Settings → Devices &
+   Services*; signing in again restores the existing entry with all its entities.
 
 ---
 
@@ -53,7 +54,9 @@ Authentication is now completed in your browser and the resulting authorization 
    Integration**, and search for **InPost Paczkomaty**.
 7. Open the **InPost login page** link shown in the setup dialog and sign in in your browser (phone number, SMS code, captcha and, if prompted, email confirmation). **Note:** Any verification email from InPost is legitimate - it will **not** ask for any credentials. If the page shows you as **already logged in/empty page**, clear your browser cookies for `account.inpost-group.com` and open the link again.
 8. After logging in, your browser is redirected to a `https://account.inpost-group.com/callback?code=...` page (it may look blank or show an error - that is fine). Copy the full address from your browser's address bar and paste it back into Home Assistant.
-9. Select the parcel lockers you wish to monitor. Your favorite lockers from your InPost profile will be pre-selected automatically.
+9. Select the parcel lockers you wish to monitor. Your favorite lockers from your InPost profile will be pre-selected automatically. The dropdown lists the 300 lockers nearest to your Home Assistant home location; to add any other locker, type its code (for example `GDA117M`) and press Enter. A code that is not on InPost's public list is flagged once - submit again to add it anyway (the public list can lag behind newly opened lockers).
+
+Each InPost account can be added once. To track parcels of several people, add each account separately.
 
 > 🎥 Prefer to watch?
 > 
@@ -61,9 +64,9 @@ Authentication is now completed in your browser and the resulting authorization 
 
 ### Manual Installation
 
-1. Download the latest release ZIP file.
-2. Unpack the release and copy the content into the `custom_components/inpost_paczkomaty` directory within your Home
-   Assistant configuration folder.
+1. Download the source code archive of the latest release (or of the `master` branch) from GitHub.
+2. Unpack it and copy the `custom_components/inpost_paczkomaty` directory into the `custom_components` directory within
+   your Home Assistant configuration folder.
 3. **Restart Home Assistant**.
 4. Execute steps **6, 7, 8, and 9** from the HACS installation method above.
 
@@ -72,6 +75,8 @@ Authentication is now completed in your browser and the resulting authorization 
 ## Configuration
 
 The integration can be customized via `configuration.yaml`. All options are **optional** and have sensible defaults.
+They apply to **all** configured accounts and are read at startup, so restart Home Assistant after changing them. The
+tracked parcel lockers are changed in the UI: *Settings → Devices & Services → InPost Paczkomaty → Configure*.
 
 ```yaml
 inpost_paczkomaty:
@@ -87,10 +92,10 @@ inpost_paczkomaty:
 
 | Option | Type | Default | Description |
 |:-------|:-----|:--------|:------------|
-| `update_interval_seconds` | integer | `30` | How often (in seconds) the integration polls the InPost API for updates. |
+| `update_interval_seconds` | integer | `30` | How often (in seconds) the integration polls the InPost API for updates. This is an unofficial API of the InPost mobile app; if you do not need near-real-time updates, a larger value (for example `300`) is kinder to it. |
 | `http_timeout_seconds` | integer | `30` | HTTP request timeout in seconds. Increase if you experience timeout errors. |
 | `ignored_en_route_statuses` | list | `["CONFIRMED"]` | List of parcel statuses to exclude from "en route" counts. See [Available Statuses](#available-en-route-statuses) below. |
-| `show_only_own_parcels` | boolean | `false` | When `true`, only shows parcels you own. When `false`, also shows parcels shared with you by others (e.g., family members). Useful to avoid duplicate counting in multi-user households. |
+| `show_only_own_parcels` | boolean | `false` | When `true`, only shows parcels you own - in every sensor, including the all parcels count. When `false`, also shows parcels shared with you by others (e.g., family members). Useful to avoid duplicate counting in multi-user households. |
 | `parcel_lockers_url` | url | [InPost points URL](https://inpost.pl/sites/default/files/points.json) | URL for fetching the parcel lockers list. Only change if InPost changes their endpoint or if you want to use custom parcel lockers list. |
 
 ### Available En Route Statuses
@@ -323,6 +328,9 @@ series:
 ## Entities
 
 The integration creates entities for the overall account (phone number registered in InPost mobile app) and for each tracked parcel locker.
+Account entities belong to an `InPost [PHONE_NUMBER]` device and every tracked locker gets its own
+`InPost [PHONE_NUMBER] [LOCKER_ID]` device. The entity IDs below are the ones Home Assistant generates for a new
+installation; a locker removed in the options has its device and entities removed as well.
 
 ### Summary Entities
 
@@ -343,6 +351,13 @@ The `parcels_list` sensor provides detailed parcel information for advanced dash
 | `en_route`               | list  | List of parcels in transit.                                              |
 | `ready_for_pickup_count` | int   | Number of parcels ready for pickup.                                      |
 | `en_route_count`         | int   | Number of parcels en route.                                              |
+| `invalid_parcels_count`  | int   | Parcels skipped because InPost returned them in an unexpected format (details in the log). |
+| `has_more`               | bool  | `true` if InPost reported more tracked parcels than it returned; those are not shown.     |
+
+> **Privacy:** the `ready_for_pickup` and `en_route` lists (which contain pickup codes, QR payloads and phone numbers)
+> are available in the current state for dashboards and templates, but are **not** written to the recorder database.
+> The same applies to `daily_data` and `cumulative_data` of the carbon footprint statistics sensor. Entity IDs contain
+> the account phone number.
 
 Each parcel in the list contains:
 
@@ -390,7 +405,7 @@ The `carbon_footprint_statistics` sensor provides the following attributes for a
 > - Uses `boxMachineDelivery` value (lower CO₂) if parcel was picked up from a **parcel locker**
 > - Uses `addressDelivery` value (higher CO₂) if parcel was delivered by **courier**
 > - Respects `show_only_own_parcels` configuration setting
-> - Uses `pickUpDate` as the date for statistics
+> - Uses `pickUpDate`, converted to Home Assistant's time zone, as the date for statistics
 
 ### Per-Locker Entities
 
@@ -401,9 +416,9 @@ For each configured locker (identified by `[LOCKER_ID]`), the following entities
 | `sensor`        | `inpost_[PHONE_NUMBER]_[LOCKER_ID]_locker_id`              | The public ID of the specific parcel locker.                                       |
 | `sensor`        | `inpost_[PHONE_NUMBER]_[LOCKER_ID]_description`            | Description of the locker location (e.g., "przy sklepie Biedronka").               |
 | `sensor`        | `inpost_[PHONE_NUMBER]_[LOCKER_ID]_address`                | Full address of the locker (city, zip code, street, building number).              |
-| `binary_sensor` | `inpost_[PHONE_NUMBER]_[LOCKER_ID]_ready_for_pickup`       | $\text{True}$ if **any** parcels are available for pickup in this specific locker. |
+| `binary_sensor` | `inpost_[PHONE_NUMBER]_[LOCKER_ID]_ready_for_pickup`       | On if **any** parcels are available for pickup in this specific locker.            |
 | `sensor`        | `inpost_[PHONE_NUMBER]_[LOCKER_ID]_ready_for_pickup_count` | Number of parcels available for pickup in this specific locker.                    |
-| `binary_sensor` | `inpost_[PHONE_NUMBER]_[LOCKER_ID]_parcels_en_route`       | $\text{True}$ if **any** parcels are en route to this specific locker.             |
+| `binary_sensor` | `inpost_[PHONE_NUMBER]_[LOCKER_ID]_parcels_en_route`       | On if **any** parcels are en route to this specific locker.                        |
 | `sensor`        | `inpost_[PHONE_NUMBER]_[LOCKER_ID]_en_route_count`         | Number of parcels currently en route to this specific locker.                      |
 
 ---
@@ -417,14 +432,34 @@ For each configured locker (identified by `[LOCKER_ID]`), the following entities
     * Count of parcels **ready for pickup** at the locker.
 * Track **carbon footprint** of delivered parcels with daily and cumulative statistics.
 
+## Troubleshooting
+
+| Symptom | What it means / what to do |
+|:--------|:---------------------------|
+| A **re-authentication** request appears | InPost rejected the stored login (for example after logging out all devices). Open it, sign in again to the **same** account and paste the redirect address. Entities and settings are kept. |
+| Entities are **unavailable** | The last update failed (InPost unreachable, rate limited, unexpected response). The integration retries on its own with an increasing delay of up to one hour; the reason is logged once when the outage starts. |
+| `invalid_parcels_count` is above 0 | InPost returned a parcel the integration could not read. The other parcels are unaffected. The log names the field at fault - please include it in an issue. |
+| `has_more` is `true` | InPost returned only part of the tracked parcels. Fetching further pages is not supported yet. |
+| A locker is missing from the list | The dropdown only shows the 300 nearest lockers and InPost's public list may be out of date. Type the locker code manually. |
+| "This InPost account is already configured" | The account already has an entry. Use *Configure* on it to change lockers. |
+
+To collect debug logs add the following to `configuration.yaml`. Access tokens and other credentials are masked in the
+integration's log messages, but review a log before publishing it: Home Assistant itself may log entity states.
+
+```yaml
+logger:
+  logs:
+    custom_components.inpost_paczkomaty: debug
+```
+
 ## Roadmap (in no particular order)
 
+* Fetch further pages when InPost returns only part of the tracked parcels (`has_more`).
 * Support tracking parcels sent to a parcel locker that **has not been configured** in the initial setup.
 * Add a `inpost_[PHONE_NUMBER]_[LOCKER_ID]_deadline` entity to monitor pickup deadlines for each ready-for-pickup parcel in a locker.
 * Add branding images to https://github.com/home-assistant/brands
-* Add this repository to HACS
 
-Please create a new GitHub Issue for any feature request you might have.
+Please create a new [GitHub Issue](https://github.com/shockwave9315/Inpost-Paczkomaty/issues) for any feature request you might have.
 
 ---
 
@@ -432,6 +467,6 @@ Please create a new GitHub Issue for any feature request you might have.
 
 | Item             | Details                                                                                                                                             |
 |:-----------------|:----------------------------------------------------------------------------------------------------------------------------------------------------|
-| **Usage Limits** | InPost API may apply HTTP request rate limiting.                                                                                                    |
-| **API AUTH**     | Login requires a captcha and is completed in your browser; Home Assistant then uses the returned refresh token to keep the access token up to date. |
+| **Usage Limits** | This integration uses the unofficial API of the InPost mobile app. InPost may rate limit requests or change the API without notice.               |
+| **API AUTH**     | Login requires a captcha and is completed in your browser; Home Assistant then uses the returned refresh token to keep the access token up to date. Tokens are stored in Home Assistant's config entry storage. |
 | **Inspiration**  | Some parts of the codebase were **heavily** inspired by [InPost-Air](https://github.com/CyberDeer/InPost-Air).                                      |

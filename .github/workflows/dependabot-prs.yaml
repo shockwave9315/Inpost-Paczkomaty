@@ -18,21 +18,23 @@ jobs:
         uses: dependabot/fetch-metadata@v2
 
       - uses: actions/checkout@v6
-        if: ${{ steps.dependabot-metadata.outputs.package-ecosystem == 'pip' }}
+        if: ${{ contains(fromJSON('["pip", "uv"]'), steps.dependabot-metadata.outputs.package-ecosystem) }}
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
       - uses: astral-sh/setup-uv@v6
-        if: ${{ steps.dependabot-metadata.outputs.package-ecosystem == 'pip' }}
+        if: ${{ contains(fromJSON('["pip", "uv"]'), steps.dependabot-metadata.outputs.package-ecosystem) }}
 
+      # manifest.json requirements must mirror pyproject.toml dependencies
+      # (tests/test_manifest.py fails otherwise).
       - name: Update dependencies
-        if: ${{ steps.dependabot-metadata.outputs.package-ecosystem == 'pip' }}
+        if: ${{ contains(fromJSON('["pip", "uv"]'), steps.dependabot-metadata.outputs.package-ecosystem) }}
         run: |
           yq -i -o json ".requirements=$(yq -o json '.project.dependencies' pyproject.toml)" ./custom_components/inpost_paczkomaty/manifest.json
 
       - name: Push updated version
         uses: stefanzweifel/git-auto-commit-action@v6
-        if: ${{ steps.dependabot-metadata.outputs.package-ecosystem == 'pip' }}
+        if: ${{ contains(fromJSON('["pip", "uv"]'), steps.dependabot-metadata.outputs.package-ecosystem) }}
         with:
           file_pattern: "./custom_components/inpost_paczkomaty/manifest.json"
           commit_message: "chore(deps): update dependencies in manifest.json"

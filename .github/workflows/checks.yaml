@@ -33,6 +33,15 @@ jobs:
       - name: Check project formatting
         run: uv run ruff format --check
 
+      # Home Assistant installs integration requirements under its own
+      # package_constraints.txt; a conflicting pin makes the integration
+      # impossible to load (e.g. python-slugify==8.0.4 vs ==9.1.2).
+      - name: Resolve manifest requirements against Home Assistant constraints
+        run: |
+          constraints="$(uv run python -c 'from importlib import resources; print(resources.files("homeassistant") / "package_constraints.txt")')"
+          jq -r '.requirements[]' custom_components/inpost_paczkomaty/manifest.json > manifest-requirements.txt
+          uv pip install --dry-run -c "$constraints" -r manifest-requirements.txt
+
 
   tests:
     runs-on: ubuntu-latest
@@ -77,3 +86,23 @@ jobs:
           suite-folded-report: false
         env:
           GITHUB_TOKEN: ${{ github.token }}
+
+  # The lock file tracks the newest Home Assistant; this job keeps the minimum
+  # version declared in hacs.json honest.
+  tests-minimum-ha:
+    name: Tests (minimum supported Home Assistant)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout the repository
+        uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Install minimum supported Home Assistant
+        run: |
+          uv venv --python 3.13 .venv-min
+          VIRTUAL_ENV=.venv-min uv pip install "homeassistant==2025.1.4" pytest-homeassistant-custom-component "dacite==1.9.2"
+
+      - name: Run tests
+        run: .venv-min/bin/python -m pytest tests/

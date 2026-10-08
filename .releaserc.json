@@ -1,5 +1,5 @@
 {
-    "repositoryUrl": "https://github.com/jakon89/Inpost-Paczkomaty.git",
+    "repositoryUrl": "https://github.com/shockwave9315/Inpost-Paczkomaty.git",
     "branches": [
         "master"
     ],
@@ -31,16 +31,6 @@
                 ]
             }
         ],
-        [
-            "@semantic-release/github",
-            {
-                "assets": [
-                    {
-                        "path": "release.zip",
-                        "label": "Release archive"
-                    }
-                ]
-            }
-        ]
+        "@semantic-release/github"
     ]
 }

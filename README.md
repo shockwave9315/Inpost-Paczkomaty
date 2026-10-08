@@ -10,7 +10,7 @@ configured lockers.
 
 > **Upgrading to 0.5.0**
 >
-> * Requires Home Assistant **2025.1** or newer (tested on 2026.10).
+> * Requires Home Assistant **2026.10** or newer. Older releases are not supported.
 > * An account is now identified by its **full phone number, including the country prefix** (for example
 >   `+48123456789`), because the national number alone is not unique. An existing entry learns its full number from
 >   your InPost profile the first time it starts after the upgrade; nothing has to be entered again.

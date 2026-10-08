@@ -10,7 +10,6 @@ __pycache__/
 coverage.xml
 report.json
 .DS_Store
-.venv-min/
 manifest-requirements.txt
 .pytest_cache/
 .ruff_cache/

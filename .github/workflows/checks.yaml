@@ -86,23 +86,3 @@ jobs:
           suite-folded-report: false
         env:
           GITHUB_TOKEN: ${{ github.token }}
-
-  # The lock file tracks the newest Home Assistant; this job keeps the minimum
-  # version declared in hacs.json honest.
-  tests-minimum-ha:
-    name: Tests (minimum supported Home Assistant)
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout the repository
-        uses: actions/checkout@v6
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v6
-
-      - name: Install minimum supported Home Assistant
-        run: |
-          uv venv --python 3.13 .venv-min
-          VIRTUAL_ENV=.venv-min uv pip install "homeassistant==2025.1.4" pytest-homeassistant-custom-component "dacite==1.9.2"
-
-      - name: Run tests
-        run: .venv-min/bin/python -m pytest tests/

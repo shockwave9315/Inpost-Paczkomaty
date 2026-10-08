@@ -91,6 +91,25 @@ def test_manifest_points_to_this_repository():
     assert "zip_release" not in hacs  # HACS installs straight from the repository
 
 
+def test_supported_versions_are_declared_consistently():
+    """One minimum Home Assistant, on the Python it runs on - no older targets.
+
+    HACS (hacs.json), the test environment (pyproject.toml, .python-version)
+    and the linter must agree, otherwise CI validates something users of the
+    declared minimum never run.
+    """
+    hacs = json.loads((ROOT / "hacs.json").read_text())
+    dev_requirements = [
+        Requirement(line) for line in PYPROJECT["dependency-groups"]["dev"]
+    ]
+    (home_assistant,) = [r for r in dev_requirements if r.name == "homeassistant"]
+    assert str(home_assistant.specifier) == f">={hacs['homeassistant']}"
+
+    python = (ROOT / ".python-version").read_text().strip()
+    assert PYPROJECT["project"]["requires-python"].startswith(f">={python}")
+    assert PYPROJECT["tool"]["ruff"]["target-version"] == f"py{python.replace('.', '')}"
+
+
 def test_translations_cover_strings():
     """Every string key exists in each translation file."""
 

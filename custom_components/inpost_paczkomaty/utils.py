@@ -59,7 +59,7 @@ def parse_retry_after(value: Optional[str]) -> Optional[float]:
         pass
     try:
         when = parsedate_to_datetime(text)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
     if when.tzinfo is None:
         when = when.replace(tzinfo=timezone.utc)
@@ -103,7 +103,7 @@ def decode_jwt_payload(token: str) -> Optional[dict]:
 
         payload_bytes = base64.urlsafe_b64decode(payload_b64)
         return json.loads(payload_bytes.decode("utf-8"))
-    except (ValueError, json.JSONDecodeError, UnicodeDecodeError):
+    except ValueError, json.JSONDecodeError, UnicodeDecodeError:
         return None
 
 

@@ -78,7 +78,7 @@ class InPostApiError(Exception):
                 detail_parsed = json.loads(detail)
                 if isinstance(detail_parsed, dict):
                     detail_type = detail_parsed.get("type")
-            except (json.JSONDecodeError, TypeError):
+            except json.JSONDecodeError, TypeError:
                 pass
 
         # Build human-readable message

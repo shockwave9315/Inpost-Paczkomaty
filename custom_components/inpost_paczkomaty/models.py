@@ -373,7 +373,7 @@ class ApiParcel:
             return None
         try:
             return float(value)
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             return None
 
     @property
@@ -389,7 +389,7 @@ class ApiParcel:
             # Handle ISO format with Z suffix
             date_str = self.pick_up_date.replace("Z", "+00:00")
             return datetime.fromisoformat(date_str)
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             return None
 
 

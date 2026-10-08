@@ -99,7 +99,7 @@ def _parse_parcel_lockers(body: Any) -> list[InPostParcelLocker]:
                     s=item.get("s", 0),
                 )
             )
-        except (AttributeError, KeyError, TypeError, ValueError):
+        except AttributeError, KeyError, TypeError, ValueError:
             skipped += 1
 
     if skipped:

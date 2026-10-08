@@ -12,6 +12,8 @@ from custom_components.inpost_paczkomaty.const import DOMAIN
 from custom_components.inpost_paczkomaty.models import HttpResponse
 
 from .common import (
+    ACCOUNT_ID,
+    ACCOUNT_SLUG,
     LOCKER,
     LOCKERS_URL,
     PHONE,
@@ -61,7 +63,7 @@ async def test_first_account_setup(hass, fake_inpost):
     assert exchange["grant_type"] == "authorization_code"
     assert exchange["code"] == "CODE123"
     assert exchange["code_verifier"]
-    assert fake_inpost.count(PROFILE_PATH) == 1  # one request for phone + favourites
+    assert fake_inpost.count(PROFILE_PATH) == 1  # one request: account + favourites
 
     schema = result["data_schema"].schema
     key = next(iter(schema))
@@ -73,10 +75,16 @@ async def test_first_account_setup(hass, fake_inpost):
     await hass.async_block_till_done()
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert result["title"] == f"InPost: +48 {PHONE}"
+    assert result["title"] == "InPost: +48123456789"
     entry = result["result"]
-    assert entry.unique_id == PHONE
-    assert entry.data["phone_number"] == PHONE
+    assert entry.unique_id == ACCOUNT_ID == "+48123456789"
+    # The account is identified by the unique ID alone; data is credentials
+    assert set(entry.data) == {
+        "access_token",
+        "refresh_token",
+        "token_expires_in",
+        "token_type",
+    }
     assert entry.data["refresh_token"] == "refresh-rotated"
     assert [item["code"] for item in entry.options["lockers"]] == [LOCKER, "WAW01M"]
     assert entry.options["lockers"][1]["description"] == "opis WAW01M"
@@ -95,16 +103,71 @@ async def test_same_account_cannot_be_added_twice(hass, fake_inpost):
     assert len(hass.config_entries.async_entries(DOMAIN)) == 1
 
 
-async def test_same_account_is_detected_for_entries_without_unique_id(
-    hass, fake_inpost
+@pytest.mark.parametrize(
+    "profile",
+    [
+        make_profile(prefix="48"),
+        make_profile(prefix="0048"),
+        make_profile(prefix=" +48 ", phone="123 456 789"),
+    ],
+    ids=["no-plus", "double-zero", "spaces"],
+)
+async def test_same_account_is_recognised_however_the_number_is_written(
+    hass, fake_inpost, profile
 ):
-    """Entries that predate unique IDs are matched by their phone number."""
-    make_entry(unique_id=None).add_to_hass(hass)
+    """The account ID does not depend on how InPost formats the number."""
+    make_entry().add_to_hass(hass)
+    fake_inpost.profile = profile
 
     result = await login(hass, await start_user_flow(hass))
 
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "already_configured"
+
+
+async def test_same_national_number_under_another_prefix_is_another_account(
+    hass, fake_inpost
+):
+    """+380 123456789 is not +48 123456789: it gets its own entry.
+
+    Regression: accounts used to be identified by the national number alone,
+    so the second one was rejected as "already configured".
+    """
+    polish = make_entry()
+    polish.add_to_hass(hass)
+    fake_inpost.profile = make_profile(prefix="+380", favorites=())
+
+    result = await login(hass, await start_user_flow(hass))
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "lockers"
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"lockers": [LOCKER]}
+    )
+    await hass.async_block_till_done()
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["title"] == "InPost: +380123456789"
+    assert result["result"].unique_id == "+380123456789"
+    assert polish.unique_id == "+48123456789"
+    assert len(hass.config_entries.async_entries(DOMAIN)) == 2
+
+
+@pytest.mark.parametrize(
+    "profile",
+    [make_profile(prefix=None), make_profile(prefix=""), make_profile(prefix="+")],
+    ids=["missing", "empty", "no-digits"],
+)
+async def test_profile_without_country_prefix_does_not_identify_an_account(
+    hass, fake_inpost, profile
+):
+    """No entry is ever created under a number that lacks its prefix."""
+    fake_inpost.profile = profile
+
+    result = await login(hass, await start_user_flow(hass))
+
+    assert result["type"] is FlowResultType.MENU
+    assert result["step_id"] == "profile_failed"
+    assert not hass.config_entries.async_entries(DOMAIN)
 
 
 async def test_second_different_account(hass, fake_inpost):
@@ -120,7 +183,7 @@ async def test_second_different_account(hass, fake_inpost):
     await hass.async_block_till_done()
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert result["result"].unique_id == "987654321"
+    assert result["result"].unique_id == "+48987654321"
     assert len(hass.config_entries.async_entries(DOMAIN)) == 2
 
 
@@ -302,7 +365,52 @@ async def test_reauth_with_another_account_is_refused(hass, fake_inpost):
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "wrong_account"
     assert entry.data["refresh_token"] == old_refresh
-    assert entry.data["phone_number"] == PHONE
+    assert entry.unique_id == ACCOUNT_ID
+
+
+async def test_reauth_with_same_number_under_another_prefix_is_refused(
+    hass, fake_inpost
+):
+    """The other country's account must not take over the entry.
+
+    Regression: only the national number was compared, so this login was
+    accepted and the entry silently switched to the other account's tokens.
+    """
+    entry, flow_id, _ = await _setup_entry_needing_reauth(hass, fake_inpost)
+    data_before = dict(entry.data)
+    fake_inpost.profile = make_profile(prefix="+380")
+
+    result = await hass.config_entries.flow.async_configure(flow_id, REDIRECT)
+    await hass.async_block_till_done()
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "wrong_account"
+    assert dict(entry.data) == data_before
+    assert entry.unique_id == "+48123456789"
+    assert entry.state is ConfigEntryState.SETUP_ERROR
+
+
+@pytest.mark.parametrize("legacy_unique_id", [None, PHONE], ids=["none", "national"])
+async def test_reauth_gives_a_legacy_entry_its_account_id(
+    hass, fake_inpost, legacy_unique_id
+):
+    """An entry that was never identified takes the account that signs in."""
+    fake_inpost.token_queue = [
+        HttpResponse(body={"error": "invalid_grant"}, status=400)
+    ]
+    entry = make_entry(access_token=make_jwt(-10), legacy_unique_id=legacy_unique_id)
+    entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    (flow,) = hass.config_entries.flow.async_progress()
+
+    result = await hass.config_entries.flow.async_configure(flow["flow_id"], REDIRECT)
+    await hass.async_block_till_done()
+
+    assert result["reason"] == "reauth_successful"
+    assert entry.unique_id == ACCOUNT_ID
+    assert entry.state is ConfigEntryState.LOADED
+    assert fake_inpost.count(PROFILE_PATH) == 1  # setup did not ask again
 
 
 async def test_reauth_error_keeps_form_open(hass, fake_inpost):
@@ -360,7 +468,7 @@ async def test_options_flow_adds_and_removes_lockers(hass, fake_inpost):
     assert entry.state is ConfigEntryState.LOADED
     ids = _entity_ids(hass, entry)
     assert len(ids) == 14
-    assert f"sensor.inpost_{PHONE}_gda145m_en_route_count" in ids
+    assert f"sensor.inpost_{ACCOUNT_SLUG}_gda145m_en_route_count" in ids
     assert not any(LOCKER.lower() in entity_id for entity_id in ids)
 
 
@@ -401,7 +509,9 @@ async def test_options_flow_flags_unlisted_code(hass, fake_inpost):
     await hass.async_block_till_done()
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert entry.options["lockers"] == [{"code": "NEW99M"}]
-    assert f"sensor.inpost_{PHONE}_new99m_en_route_count" in _entity_ids(hass, entry)
+    assert f"sensor.inpost_{ACCOUNT_SLUG}_new99m_en_route_count" in _entity_ids(
+        hass, entry
+    )
 
 
 async def test_lockers_list_is_downloaded_once_and_cached(hass, fake_inpost):

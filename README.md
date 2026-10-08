@@ -11,12 +11,15 @@ configured lockers.
 > **Upgrading to 0.5.0**
 >
 > * Requires Home Assistant **2025.1** or newer (tested on 2026.10).
+> * An account is now identified by its **full phone number, including the country prefix** (for example
+>   `+48123456789`), because the national number alone is not unique. An existing entry learns its full number from
+>   your InPost profile the first time it starts after the upgrade; nothing has to be entered again.
 > * Entities are re-created under a new internal identity. Entity IDs follow the scheme documented
->   [below](#entities); on installations created with Home Assistant 2026.x the per-locker IDs change from
->   `sensor.paczkomat_<locker>_inpost_<phone>_<locker>_...` to `sensor.inpost_<phone>_<locker>_...`, and the two binary
->   sensors are now named `..._parcels_en_route` and `..._ready_for_pickup`. Update dashboards and automations that
->   reference the old IDs. The config entry, tokens and selected lockers are kept - there is no need to remove the
->   integration.
+>   [below](#entities) and now contain the full number: `sensor.inpost_123456789_...` becomes
+>   `sensor.inpost_48123456789_...`, the per-locker IDs become `sensor.inpost_48123456789_<locker>_...`, and the two
+>   binary sensors are now named `..._parcels_en_route` and `..._ready_for_pickup`. Update dashboards and automations
+>   that reference the old IDs. The config entry, tokens and selected lockers are kept - there is no need to remove
+>   the integration.
 > * If InPost stops accepting the stored login, Home Assistant now asks you to **re-authenticate** instead of
 >   requiring the integration to be removed and added again.
 
@@ -56,7 +59,8 @@ configured lockers.
 8. After logging in, your browser is redirected to a `https://account.inpost-group.com/callback?code=...` page (it may look blank or show an error - that is fine). Copy the full address from your browser's address bar and paste it back into Home Assistant.
 9. Select the parcel lockers you wish to monitor. Your favorite lockers from your InPost profile will be pre-selected automatically. The dropdown lists the 300 lockers nearest to your Home Assistant home location; to add any other locker, type its code (for example `GDA117M`) and press Enter. A code that is not on InPost's public list is flagged once - submit again to add it anyway (the public list can lag behind newly opened lockers).
 
-Each InPost account can be added once. To track parcels of several people, add each account separately.
+Each InPost account can be added once. To track parcels of several people, add each account separately. An account
+is its full phone number including the country prefix, so `+48 123 456 789` and `+380 123 456 789` are two accounts.
 
 > 🎥 Prefer to watch?
 > 
@@ -151,9 +155,9 @@ Display parcel counts directly on your Home Assistant dashboard to see at a glan
 ![Markdown panel example](docs/img/markdown-panel-example.png)
 
 ```text
-# 📦 Parcels waiting: {{ (states('sensor.inpost_123456789_ready_for_pickup_parcels_count') | int) + (states('sensor.inpost_987654321_ready_for_pickup_parcels_count') | int) }}
-## 🙋‍♀️ Wife: {{ states('sensor.inpost_987654321_ready_for_pickup_parcels_count') }}
-## 🙋‍♂️ Husband: {{ states('sensor.inpost_123456789_ready_for_pickup_parcels_count') }}
+# 📦 Parcels waiting: {{ (states('sensor.inpost_48123456789_ready_for_pickup_parcels_count') | int) + (states('sensor.inpost_48987654321_ready_for_pickup_parcels_count') | int) }}
+## 🙋‍♀️ Wife: {{ states('sensor.inpost_48987654321_ready_for_pickup_parcels_count') }}
+## 🙋‍♂️ Husband: {{ states('sensor.inpost_48123456789_ready_for_pickup_parcels_count') }}
 ```
 
 #### Advanced Parcels Dashboard with QR Codes
@@ -167,7 +171,7 @@ Display detailed parcels information with QR codes for easy pickup using Home As
 ```yaml
 type: markdown
 content: |
-  {% set parcels_sensor = 'sensor.inpost_123456789_parcels_list' %}
+  {% set parcels_sensor = 'sensor.inpost_48123456789_parcels_list' %}
   {% set ready = state_attr(parcels_sensor, 'ready_for_pickup') or [] %}
   {% set en_route = state_attr(parcels_sensor, 'en_route') or [] %}
 
@@ -213,7 +217,7 @@ content: |
 ```yaml
 type: markdown
 content: |
-  {% set parcels_sensor = 'sensor.inpost_123456789_parcels_list' %}
+  {% set parcels_sensor = 'sensor.inpost_48123456789_parcels_list' %}
   {% set ready = state_attr(parcels_sensor, 'ready_for_pickup') or [] %}
   {% set en_route = state_attr(parcels_sensor, 'en_route') or [] %}
 
@@ -248,10 +252,10 @@ conditions:
   - condition: or
     conditions:
       - condition: numeric_state
-        entity_id: sensor.inpost_123456789_ready_for_pickup_parcels_count
+        entity_id: sensor.inpost_48123456789_ready_for_pickup_parcels_count
         above: 0
       - condition: numeric_state
-        entity_id: sensor.inpost_987654321_ready_for_pickup_parcels_count
+        entity_id: sensor.inpost_48987654321_ready_for_pickup_parcels_count
         above: 0
 actions:
   - action: notify.mobile_app_iphone_husband
@@ -260,10 +264,10 @@ actions:
       title: 📦 Parcels waiting
       message: >-
         🙋‍♀️ Wife: {{
-        states('sensor.inpost_987654321_ready_for_pickup_parcels_count') }}.
+        states('sensor.inpost_48987654321_ready_for_pickup_parcels_count') }}.
 
         🙋‍♂️ Husband: {{
-        states('sensor.inpost_123456789_ready_for_pickup_parcels_count') }}.
+        states('sensor.inpost_48123456789_ready_for_pickup_parcels_count') }}.
 mode: single
 ```
 
@@ -277,7 +281,7 @@ The integration tracks CO₂ emissions of your delivered parcels. Carbon footpri
 type: statistics-graph
 title: Carbon Footprint Over Time
 entities:
-  - sensor.inpost_123456789_total_carbon_footprint
+  - sensor.inpost_48123456789_total_carbon_footprint
 stat_types:
   - state
 days_to_show: 180
@@ -297,7 +301,7 @@ header:
   title: Daily Carbon Footprint (kg CO₂)
 graph_span: 30d
 series:
-  - entity: sensor.inpost_123456789_carbon_footprint_statistics
+  - entity: sensor.inpost_48123456789_carbon_footprint_statistics
     name: Daily CO₂
     type: column
     data_generator: |
@@ -315,7 +319,7 @@ header:
   title: Carbon Footprint (Long-Term Statistics)
 graph_span: 6mo
 series:
-  - entity: sensor.inpost_123456789_total_carbon_footprint
+  - entity: sensor.inpost_48123456789_total_carbon_footprint
     name: Total CO₂
     type: line
     statistics:
@@ -329,8 +333,10 @@ series:
 
 The integration creates entities for the overall account (phone number registered in InPost mobile app) and for each tracked parcel locker.
 Account entities belong to an `InPost [PHONE_NUMBER]` device and every tracked locker gets its own
-`InPost [PHONE_NUMBER] [LOCKER_ID]` device. The entity IDs below are the ones Home Assistant generates for a new
-installation; a locker removed in the options has its device and entities removed as well.
+`InPost [PHONE_NUMBER] [LOCKER_ID]` device, where `[PHONE_NUMBER]` is the full number with its country prefix (for
+example `+48123456789`; in entity IDs the `+` is dropped: `48123456789`). The entity IDs below are the ones Home
+Assistant generates for a new installation; a locker removed in the options has its device and entities removed as
+well.
 
 ### Summary Entities
 
@@ -436,13 +442,16 @@ For each configured locker (identified by `[LOCKER_ID]`), the following entities
 
 | Symptom | What it means / what to do |
 |:--------|:---------------------------|
-| "Could not read your InPost profile" during login | The login itself worked, but the profile request failed (usually a temporary InPost problem). Choose **Try again** to repeat only that request, or **Sign in again** to start a new login. |
+| "Could not read your InPost profile" during login | The login itself worked, but the profile request failed or did not contain the account's phone number with its country prefix (usually a temporary InPost problem). Choose **Try again** to repeat only that request, or **Sign in again** to start a new login. |
 | A **re-authentication** request appears | InPost rejected the stored login (for example after logging out all devices). Open it, sign in again to the **same** account and paste the redirect address. Entities and settings are kept. |
+| "You signed in to a different InPost account" during re-authentication | The login belongs to another phone number (the country prefix counts) than the entry. Sign in to the entry's own account, or add the other account as a new entry. |
 | Entities are **unavailable** | The last update failed (InPost unreachable, rate limited, unexpected response). The integration retries on its own with an increasing delay of up to one hour; the reason is logged once when the outage starts. |
 | `invalid_parcels_count` is above 0 | InPost returned a parcel the integration could not read. The other parcels are unaffected. The log names the field at fault - please include it in an issue. |
 | `has_more` is `true` | InPost returned only part of the tracked parcels. Fetching further pages is not supported yet. |
 | A locker is missing from the list | The dropdown only shows the 300 nearest lockers and InPost's public list may be out of date. Type the locker code manually. |
 | "This InPost account is already configured" | The account already has an entry. Use *Configure* on it to change lockers. |
+| After an upgrade the entry stays in *Retrying setup* with "Could not identify the InPost account" | An entry created before 0.5.0 reads its full phone number from the InPost profile once; that request has failed so far and is repeated automatically. |
+| After an upgrade an entry fails with "already set up in another entry" | Two entries hold the same account. Remove one of them. |
 
 To collect debug logs add the following to `configuration.yaml`. Access tokens and other credentials are masked in the
 integration's log messages, but review a log before publishing it: Home Assistant itself may log entity states.

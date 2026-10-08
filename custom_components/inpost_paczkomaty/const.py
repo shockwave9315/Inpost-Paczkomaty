@@ -19,7 +19,6 @@ CONF_SHOW_ONLY_OWN_PARCELS = "show_only_own_parcels"
 DEFAULT_SHOW_ONLY_OWN_PARCELS = False
 
 # Config entry keys
-ENTRY_PHONE_NUMBER_CONFIG = "phone_number"
 CONF_LOCKERS = "lockers"
 
 # Polling backoff: after a failed update the interval doubles up to this cap

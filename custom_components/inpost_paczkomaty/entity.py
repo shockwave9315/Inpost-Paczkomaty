@@ -8,8 +8,10 @@ the same parcel locker without colliding):
 * account entity  - unique_id ``<entry_id>_account_<key>``
 * locker entity   - unique_id ``<entry_id>_locker_<LOCKER>_<key>``
 
-Entity names are relative to the device name (``has_entity_name``), which
-yields ``sensor.inpost_<phone>_...`` and ``sensor.inpost_<phone>_<locker>_...``.
+Devices are named after the account ID (see ``account.py``) and entity names
+are relative to the device name (``has_entity_name``). For the account
+``+48123456789`` this yields ``sensor.inpost_48123456789_...`` and
+``sensor.inpost_48123456789_<locker>_...``.
 """
 
 from __future__ import annotations
@@ -21,7 +23,7 @@ from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity import Entity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import CONF_LOCKERS, DOMAIN, ENTRY_PHONE_NUMBER_CONFIG
+from .const import CONF_LOCKERS, DOMAIN
 from .coordinator import InpostDataCoordinator
 
 
@@ -45,8 +47,12 @@ def get_tracked_lockers(entry: ConfigEntry) -> dict[str, dict[str, Any]]:
 
 
 def account_label(entry: ConfigEntry) -> str:
-    """Return the label identifying the account in device names."""
-    return entry.data.get(ENTRY_PHONE_NUMBER_CONFIG) or entry.entry_id[:8]
+    """Return the label identifying the account in device names.
+
+    This is the account ID: setup makes sure every entry has one before any
+    entity is created.
+    """
+    return str(entry.unique_id)
 
 
 def account_device_identifier(entry: ConfigEntry) -> tuple[str, str]:

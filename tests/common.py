@@ -10,7 +10,11 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from custom_components.inpost_paczkomaty.const import DOMAIN
 from custom_components.inpost_paczkomaty.models import HttpResponse
 
-PHONE = "123456789"
+PREFIX = "+48"
+PHONE = "123456789"  # national number: not unique without the prefix
+ACCOUNT_ID = f"{PREFIX}{PHONE}"
+# How the account ID appears in entity IDs ("+" is dropped by slugify)
+ACCOUNT_SLUG = ACCOUNT_ID.lstrip("+")
 LOCKER = "GDA117M"
 PARCELS_PATH = "/v4/parcels/tracked"
 PROFILE_PATH = "/izi/app/shopping/v2/profile"
@@ -62,10 +66,14 @@ def make_parcel(
     return parcel
 
 
-def make_profile(phone: str | None = PHONE, favorites: tuple[str, ...] = (LOCKER,)):
+def make_profile(
+    phone: str | None = PHONE,
+    favorites: tuple[str, ...] = (LOCKER,),
+    prefix: str | None = PREFIX,
+):
     """Create a profile response."""
     return {
-        "personal": {"phoneNumber": phone, "phoneNumberPrefix": "+48"},
+        "personal": {"phoneNumber": phone, "phoneNumberPrefix": prefix},
         "delivery": {
             "points": {
                 "items": [
@@ -121,20 +129,28 @@ def make_entry(
     access_token: str | None = None,
     refresh_token: str = "refresh-original",
     lockers: tuple[str, ...] = (LOCKER,),
-    unique_id: str | None = "auto",
+    prefix: str = PREFIX,
+    legacy_unique_id: str | None | bool = False,
 ) -> MockConfigEntry:
-    """Create a config entry the way the config flow stores it."""
+    """Create a config entry the way the config flow stores it.
+
+    Pass ``legacy_unique_id`` (None or the national number) for an entry
+    created before 0.5.0: no account ID, the national number kept in the data.
+    """
+    legacy = legacy_unique_id is not False
+    data = {
+        "access_token": access_token or make_jwt(),
+        "refresh_token": refresh_token,
+        "token_expires_in": 7199,
+        "token_type": "Bearer",
+    }
+    if legacy:
+        data["phone_number"] = phone
     return MockConfigEntry(
         domain=DOMAIN,
-        title=f"InPost: +48 {phone}",
-        unique_id=phone if unique_id == "auto" else unique_id,
-        data={
-            "access_token": access_token or make_jwt(),
-            "refresh_token": refresh_token,
-            "token_expires_in": 7199,
-            "token_type": "Bearer",
-            "phone_number": phone,
-        },
+        title=f"InPost: +48 {phone}" if legacy else f"InPost: {prefix}{phone}",
+        unique_id=legacy_unique_id if legacy else f"{prefix}{phone}",
+        data=data,
         options={
             "lockers": [
                 {

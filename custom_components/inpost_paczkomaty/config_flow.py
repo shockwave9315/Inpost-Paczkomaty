@@ -21,6 +21,7 @@ from homeassistant.helpers.selector import (
     TextSelectorConfig,
 )
 
+from .account import is_account_id
 from .api import InPostApiClient
 from .const import (
     CONF_ACCESS_TOKEN,
@@ -34,7 +35,6 @@ from .const import (
     DEFAULT_HTTP_TIMEOUT,
     DEFAULT_PARCEL_LOCKERS_URL,
     DOMAIN,
-    ENTRY_PHONE_NUMBER_CONFIG,
     LOCKERS_CACHE_TTL,
     LOCKERS_SELECT_LIMIT,
     OAUTH_REDIRECT_URI,
@@ -266,11 +266,15 @@ class InPostConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
       currently shown to the user.
     * ``_tokens`` - a login completed, but the account is not identified yet
       (the profile request is still to be made or may be retried).
-    * ``_data``   - filled only once the account is identified; this is what
-      ends up in the config entry.
+    * ``_data``   - filled only once the account is identified; these are the
+      credentials that end up in the config entry.
 
     The login form always exchanges the redirect the user submitted. Nothing
     is ever skipped because "a token already exists".
+
+    Which account an entry belongs to is decided by its account ID alone (see
+    ``account.py``): it becomes the unique ID of a new entry and is what a
+    re-authentication is checked against.
     """
 
     VERSION = 1
@@ -400,14 +404,14 @@ class InPostConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def _async_identify_account(self):
         """Identify the account behind the new tokens and continue the flow.
 
-        The account phone number is required: it identifies the account, so
-        the same one cannot be added twice.
+        The account ID is required: without it the same account could be
+        added twice and a re-authentication could not be verified.
 
         * InPost rejects the tokens (permanent): they are discarded and a new
           login is requested.
-        * Anything else (transient, or a profile without a phone number): the
-          tokens are kept and the user chooses between retrying the profile
-          request and signing in again.
+        * Anything else (transient, or a profile without the full phone
+          number): the tokens are kept and the user chooses between retrying
+          the profile request and signing in again.
         """
         if self._tokens is None:
             return self._show_login_form()
@@ -422,9 +426,12 @@ class InPostConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             _LOGGER.warning("Failed to fetch InPost profile: %s", err)
             return self._show_profile_failed()
 
-        personal = profile.personal
-        if not personal or not personal.phone_number:
-            _LOGGER.warning("InPost profile does not contain a phone number")
+        account_id = profile.account_id
+        if account_id is None:
+            _LOGGER.warning(
+                "InPost profile does not contain the account's phone number "
+                "with its country prefix"
+            )
             return self._show_profile_failed()
 
         self._profile = profile
@@ -433,12 +440,11 @@ class InPostConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             CONF_REFRESH_TOKEN: self._tokens.refresh_token,
             CONF_TOKEN_EXPIRES_IN: self._tokens.expires_in,
             CONF_TOKEN_TYPE: self._tokens.token_type,
-            ENTRY_PHONE_NUMBER_CONFIG: personal.phone_number,
         }
 
         if self.source == config_entries.SOURCE_REAUTH:
-            return self._async_finish_reauth(personal.phone_number)
-        return await self._async_finish_user(personal.phone_number)
+            return self._async_finish_reauth(account_id)
+        return await self._async_finish_user(account_id)
 
     async def _async_step_login(self, user_input: dict[str, Any] | None):
         """Show the login form or process the redirect pasted into it."""
@@ -487,16 +493,10 @@ class InPostConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """
         return await self._async_step_login(user_input)
 
-    async def _async_finish_user(self, phone_number: str):
+    async def _async_finish_user(self, account_id: str):
         """Continue a new-account flow once the account is identified."""
-        await self.async_set_unique_id(phone_number)
+        await self.async_set_unique_id(account_id)
         self._abort_if_unique_id_configured()
-        # Entries created before unique IDs were introduced
-        if any(
-            entry.data.get(ENTRY_PHONE_NUMBER_CONFIG) == phone_number
-            for entry in self._async_current_entries()
-        ):
-            return self.async_abort(reason="already_configured")
         return await self.async_step_lockers()
 
     async def async_step_reauth(self, entry_data):
@@ -507,35 +507,31 @@ class InPostConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Log in again and store fresh tokens in the existing entry."""
         return await self._async_step_login(user_input)
 
-    def _async_finish_reauth(self, phone_number: str):
+    def _async_finish_reauth(self, account_id: str):
         """Store the new tokens in the entry being re-authenticated.
 
-        The entry is only written here, after the account has been verified to
-        be the same one; every failure before this point leaves it untouched.
+        The entry is only written here, after the login has been verified to
+        belong to the entry's account; every failure before this point leaves
+        it untouched.
+
+        An entry created before 0.5.0 whose credentials stopped working before
+        it could be identified has no account ID to compare with. It becomes
+        the entry of the account that signs in, unless that account already
+        has one.
         """
         entry = self._get_reauth_entry()
-        expected = entry.data.get(ENTRY_PHONE_NUMBER_CONFIG)
-        if expected and expected != phone_number:
+        if is_account_id(entry.unique_id) and entry.unique_id != account_id:
             return self.async_abort(reason="wrong_account")
-        if any(
-            other.entry_id != entry.entry_id
-            and phone_number
-            in (other.unique_id, other.data.get(ENTRY_PHONE_NUMBER_CONFIG))
-            for other in self._async_current_entries()
-        ):
+        holder = self.hass.config_entries.async_entry_for_domain_unique_id(
+            DOMAIN, account_id
+        )
+        if holder is not None and holder.entry_id != entry.entry_id:
             return self.async_abort(reason="already_configured")
         return self.async_update_reload_and_abort(
             entry,
-            unique_id=phone_number,
+            unique_id=account_id,
             data_updates=self._data,
         )
-
-    def _entry_title(self) -> str:
-        """Build the entry title from the account phone number."""
-        personal = self._profile.personal if self._profile else None
-        prefix = (personal.phone_number_prefix if personal else None) or ""
-        phone_number = self._data.get(ENTRY_PHONE_NUMBER_CONFIG, "")
-        return f"InPost: {prefix} {phone_number}".replace("  ", " ").strip()
 
     async def async_step_lockers(self, user_input=None):
         """Handle parcel locker selection step."""
@@ -548,7 +544,7 @@ class InPostConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             )
             if not unknown:
                 return self.async_create_entry(
-                    title=self._entry_title(),
+                    title=f"InPost: {self.unique_id}",
                     data=self._data,
                     options={CONF_LOCKERS: lockers_data},
                 )

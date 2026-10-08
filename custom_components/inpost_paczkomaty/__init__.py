@@ -10,9 +10,15 @@ import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import (
+    ConfigEntryAuthFailed,
+    ConfigEntryError,
+    ConfigEntryNotReady,
+)
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 import homeassistant.helpers.config_validation as cv
 
+from .account import is_account_id
 from .api import InPostApiClient
 from .const import (
     CONF_ACCESS_TOKEN,
@@ -30,7 +36,6 @@ from .const import (
     DEFAULT_SHOW_ONLY_OWN_PARCELS,
     DEFAULT_UPDATE_INTERVAL,
     DOMAIN,
-    ENTRY_PHONE_NUMBER_CONFIG,
 )
 from .coordinator import InpostDataCoordinator
 from .entity import (
@@ -40,6 +45,7 @@ from .entity import (
     locker_device_identifier,
     locker_unique_id_prefix,
 )
+from .exceptions import ApiAuthError, ApiClientError
 from .models import AuthTokens
 
 _LOGGER = logging.getLogger(__name__)
@@ -83,22 +89,48 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
     return True
 
 
-@callback
-def _async_adopt_unique_id(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Give entries created before unique IDs existed their account ID.
+async def _async_ensure_account_id(
+    hass: HomeAssistant, entry: ConfigEntry, api_client: InPostApiClient
+) -> None:
+    """Make sure the entry knows which InPost account it belongs to.
 
-    This lets the config flow reject a second entry for the same account.
+    Entries created by the config flow carry the account ID as their unique
+    ID and need nothing. Entries created before 0.5.0 stored the national
+    phone number only, which does not identify an account (see
+    ``account.py``); their ID is read from the InPost profile, once.
+
+    Raises:
+        ConfigEntryAuthFailed: If InPost rejects the stored credentials.
+        ConfigEntryNotReady: If the account cannot be identified right now.
+        ConfigEntryError: If another entry already holds this account.
     """
-    phone_number = entry.data.get(ENTRY_PHONE_NUMBER_CONFIG)
-    if entry.unique_id is not None or not phone_number:
+    if is_account_id(entry.unique_id):
         return
-    if any(
-        other.unique_id == phone_number
-        for other in hass.config_entries.async_entries(DOMAIN)
-        if other.entry_id != entry.entry_id
-    ):
-        return
-    hass.config_entries.async_update_entry(entry, unique_id=phone_number)
+
+    try:
+        profile = await api_client.get_profile()
+    except ApiAuthError as err:
+        raise ConfigEntryAuthFailed(
+            f"InPost rejected the stored credentials: {err}"
+        ) from err
+    except ApiClientError as err:
+        raise ConfigEntryNotReady(
+            f"Could not identify the InPost account: {err}"
+        ) from err
+
+    account_id = profile.account_id
+    if account_id is None:
+        raise ConfigEntryNotReady(
+            "Could not identify the InPost account: the profile does not "
+            "contain its phone number"
+        )
+    holder = hass.config_entries.async_entry_for_domain_unique_id(DOMAIN, account_id)
+    if holder is not None:
+        raise ConfigEntryError(
+            "This InPost account is already set up in another entry; "
+            "remove one of the two"
+        )
+    hass.config_entries.async_update_entry(entry, unique_id=account_id)
 
 
 @callback
@@ -199,7 +231,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     try:
         await coordinator.async_config_entry_first_refresh()
-        _async_adopt_unique_id(hass, entry)
+        await _async_ensure_account_id(hass, entry, api_client)
         _async_cleanup_registries(hass, entry)
         entry.runtime_data = coordinator
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)

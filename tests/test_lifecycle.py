@@ -16,17 +16,21 @@ from custom_components.inpost_paczkomaty.http_client import HttpClient
 from custom_components.inpost_paczkomaty.models import HttpResponse
 
 from .common import (
+    ACCOUNT_ID,
+    ACCOUNT_SLUG,
     LOCKER,
     PARCELS_PATH,
     PHONE,
+    PROFILE_PATH,
     TOKEN_PATH,
     make_entry,
     make_jwt,
     make_parcel,
+    make_profile,
 )
 
-PARCELS_LIST = f"sensor.inpost_{PHONE}_parcels_list"
-READY_COUNT = f"sensor.inpost_{PHONE}_ready_for_pickup_parcels_count"
+PARCELS_LIST = f"sensor.inpost_{ACCOUNT_SLUG}_parcels_list"
+READY_COUNT = f"sensor.inpost_{ACCOUNT_SLUG}_ready_for_pickup_parcels_count"
 
 
 async def setup_entry(hass: HomeAssistant, entry) -> None:
@@ -63,30 +67,36 @@ async def test_setup_fetches_parcels_once_and_creates_entities(hass, fake_inpost
     assert entry.state is ConfigEntryState.LOADED
     assert fake_inpost.count(PARCELS_PATH) == 1
     assert fake_inpost.count(TOKEN_PATH) == 0
+    assert fake_inpost.count(PROFILE_PATH) == 0  # the entry knows its account
 
     locker = LOCKER.lower()
     assert entity_ids(hass, entry) == {
-        f"sensor.inpost_{PHONE}_all_parcels_count",
-        f"sensor.inpost_{PHONE}_en_route_parcels_count",
+        f"sensor.inpost_{ACCOUNT_SLUG}_all_parcels_count",
+        f"sensor.inpost_{ACCOUNT_SLUG}_en_route_parcels_count",
         READY_COUNT,
         PARCELS_LIST,
-        f"sensor.inpost_{PHONE}_total_carbon_footprint",
-        f"sensor.inpost_{PHONE}_today_carbon_footprint",
-        f"sensor.inpost_{PHONE}_carbon_footprint_statistics",
-        f"sensor.inpost_{PHONE}_{locker}_en_route_count",
-        f"sensor.inpost_{PHONE}_{locker}_ready_for_pickup_count",
-        f"sensor.inpost_{PHONE}_{locker}_locker_id",
-        f"sensor.inpost_{PHONE}_{locker}_description",
-        f"sensor.inpost_{PHONE}_{locker}_address",
-        f"binary_sensor.inpost_{PHONE}_{locker}_parcels_en_route",
-        f"binary_sensor.inpost_{PHONE}_{locker}_ready_for_pickup",
+        f"sensor.inpost_{ACCOUNT_SLUG}_total_carbon_footprint",
+        f"sensor.inpost_{ACCOUNT_SLUG}_today_carbon_footprint",
+        f"sensor.inpost_{ACCOUNT_SLUG}_carbon_footprint_statistics",
+        f"sensor.inpost_{ACCOUNT_SLUG}_{locker}_en_route_count",
+        f"sensor.inpost_{ACCOUNT_SLUG}_{locker}_ready_for_pickup_count",
+        f"sensor.inpost_{ACCOUNT_SLUG}_{locker}_locker_id",
+        f"sensor.inpost_{ACCOUNT_SLUG}_{locker}_description",
+        f"sensor.inpost_{ACCOUNT_SLUG}_{locker}_address",
+        f"binary_sensor.inpost_{ACCOUNT_SLUG}_{locker}_parcels_en_route",
+        f"binary_sensor.inpost_{ACCOUNT_SLUG}_{locker}_ready_for_pickup",
     }
     assert hass.states.get(READY_COUNT).state == "1"
     assert (
-        hass.states.get(f"binary_sensor.inpost_{PHONE}_{locker}_ready_for_pickup").state
+        hass.states.get(
+            f"binary_sensor.inpost_{ACCOUNT_SLUG}_{locker}_ready_for_pickup"
+        ).state
         == "on"
     )
-    assert hass.states.get(f"sensor.inpost_{PHONE}_{locker}_locker_id").state == LOCKER
+    assert (
+        hass.states.get(f"sensor.inpost_{ACCOUNT_SLUG}_{locker}_locker_id").state
+        == LOCKER
+    )
     attrs = hass.states.get(PARCELS_LIST).attributes
     assert attrs["ready_for_pickup"][0]["open_code"] == "680001"
     assert attrs["invalid_parcels_count"] == 0
@@ -107,7 +117,7 @@ async def test_two_accounts_tracking_the_same_locker(hass, fake_inpost):
     assert first.state is second.state is ConfigEntryState.LOADED
     assert len(entity_ids(hass, first)) == 14
     assert len(entity_ids(hass, second)) == 14
-    assert f"sensor.inpost_987654321_{LOCKER.lower()}_en_route_count" in entity_ids(
+    assert f"sensor.inpost_48987654321_{LOCKER.lower()}_en_route_count" in entity_ids(
         hass, second
     )
     devices = dr.async_get(hass)
@@ -115,11 +125,119 @@ async def test_two_accounts_tracking_the_same_locker(hass, fake_inpost):
     assert len(dr.async_entries_for_config_entry(devices, second.entry_id)) == 2
 
 
-async def test_entry_without_unique_id_adopts_phone_number(hass, fake_inpost):
-    """Entries created before unique IDs existed are identified on setup."""
-    entry = make_entry(unique_id=None)
+async def test_same_national_number_under_two_prefixes(hass, fake_inpost):
+    """The country prefix tells such accounts apart everywhere they show up."""
+    polish = make_entry()
+    ukrainian = make_entry(prefix="+380")
+    await setup_entry(hass, polish)
+    await setup_entry(hass, ukrainian)
+
+    assert polish.state is ukrainian.state is ConfigEntryState.LOADED
+    assert polish.unique_id == "+48123456789"
+    assert ukrainian.unique_id == "+380123456789"
+    assert READY_COUNT in entity_ids(hass, polish)
+    assert "sensor.inpost_380123456789_ready_for_pickup_parcels_count" in entity_ids(
+        hass, ukrainian
+    )
+    assert not entity_ids(hass, polish) & entity_ids(hass, ukrainian)
+    devices = dr.async_get(hass)
+    names = {
+        device.name
+        for entry in (polish, ukrainian)
+        for device in dr.async_entries_for_config_entry(devices, entry.entry_id)
+    }
+    assert names == {
+        "InPost +48123456789",
+        f"InPost +48123456789 {LOCKER}",
+        "InPost +380123456789",
+        f"InPost +380123456789 {LOCKER}",
+    }
+
+
+# =============================================================================
+# Entries created before 0.5.0 (no account ID)
+# =============================================================================
+
+
+@pytest.mark.parametrize("legacy_unique_id", [None, PHONE], ids=["none", "national"])
+async def test_legacy_entry_is_identified_from_the_profile(
+    hass, fake_inpost, legacy_unique_id
+):
+    """The stored national number is not trusted: the profile names the account."""
+    fake_inpost.profile = make_profile(prefix="+380")
+    entry = make_entry(legacy_unique_id=legacy_unique_id)
     await setup_entry(hass, entry)
+
+    assert entry.state is ConfigEntryState.LOADED
+    assert entry.unique_id == "+380123456789"
+    assert fake_inpost.count(PROFILE_PATH) == 1
+    assert "sensor.inpost_380123456789_parcels_list" in entity_ids(hass, entry)
+
+    # Identified for good: no further profile requests
+    assert await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+    assert entry.state is ConfigEntryState.LOADED
+    assert fake_inpost.count(PROFILE_PATH) == 1
+
+
+@pytest.mark.parametrize(
+    "profile_response",
+    [
+        HttpResponse(body={}, status=500),
+        HttpResponse(body="<html>", status=200),
+        HttpResponse(body=make_profile(prefix=None), status=200),
+        HttpResponse(body=make_profile(phone=None), status=200),
+        ConnectionResetError("reset"),
+    ],
+    ids=["http-500", "not-json", "no-prefix", "no-number", "reset"],
+)
+async def test_legacy_entry_waits_until_it_can_be_identified(
+    hass, fake_inpost, profile_response
+):
+    """Without an account ID no entity is created; setup is retried instead."""
+    fake_inpost.profile_queue = [profile_response]
+    entry = make_entry(legacy_unique_id=PHONE)
+    await setup_entry(hass, entry)
+
+    assert entry.state is ConfigEntryState.SETUP_RETRY
     assert entry.unique_id == PHONE
+    assert not entity_ids(hass, entry)
+    assert not reauth_flows(hass)
+
+    assert await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+    assert entry.state is ConfigEntryState.LOADED
+    assert entry.unique_id == ACCOUNT_ID
+
+
+async def test_legacy_entry_with_rejected_credentials_starts_reauth(hass, fake_inpost):
+    """An auth failure while identifying the account is still an auth failure."""
+    fake_inpost.profile_queue = [HttpResponse(body={}, status=401)]
+    fake_inpost.token_queue = [
+        HttpResponse(body={"error": "invalid_grant"}, status=400)
+    ]
+    entry = make_entry(legacy_unique_id=None)
+    await setup_entry(hass, entry)
+
+    assert entry.state is ConfigEntryState.SETUP_ERROR
+    assert entry.unique_id is None
+    assert len(reauth_flows(hass)) == 1
+
+
+async def test_legacy_duplicate_of_a_configured_account_is_not_loaded(
+    hass, fake_inpost, caplog
+):
+    """Two entries never end up holding the same account."""
+    current = make_entry()
+    await setup_entry(hass, current)
+    duplicate = make_entry(legacy_unique_id=PHONE)
+    await setup_entry(hass, duplicate)
+
+    assert current.state is ConfigEntryState.LOADED
+    assert duplicate.state is ConfigEntryState.SETUP_ERROR
+    assert duplicate.unique_id == PHONE
+    assert "already set up in another entry" in caplog.text
+    assert "already in use" not in caplog.text  # HA's duplicate unique ID error
 
 
 async def test_stale_registry_entries_are_removed(hass, fake_inpost):

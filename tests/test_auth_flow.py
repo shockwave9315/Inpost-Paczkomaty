@@ -23,9 +23,9 @@ from custom_components.inpost_paczkomaty.exceptions import RequestTimeoutError
 from custom_components.inpost_paczkomaty.models import HttpResponse
 
 from .common import (
+    ACCOUNT_ID,
     LOCKER,
     PARCELS_PATH,
-    PHONE,
     PROFILE_PATH,
     TOKEN_PATH,
     make_entry,
@@ -181,8 +181,7 @@ class Flow:
             assert self.hass.config_entries.async_entries(DOMAIN) == [entry]
 
         assert entry.state is ConfigEntryState.LOADED
-        assert entry.unique_id == PHONE
-        assert entry.data["phone_number"] == PHONE
+        assert entry.unique_id == ACCOUNT_ID
         assert entry.data["access_token"].endswith(f"sig-{marker}")
         assert entry.data["refresh_token"] == f"r-{marker}"
         # The stored token is the one the running integration really uses
@@ -356,6 +355,9 @@ async def test_profile_without_phone_number_offers_retry_or_new_login(flow):
     flow.fake.token_queue = [tokens("first")]
     flow.fake.profile_queue = [HttpResponse(body=make_profile(phone=None), status=200)]
     flow.assert_profile_menu(await flow.submit("CODE1"))
+
+    flow.fake.profile_queue = [HttpResponse(body=make_profile(prefix=None), status=200)]
+    flow.assert_profile_menu(await flow.choose("retry_profile"))
 
     flow.fake.profile_queue = [HttpResponse(body={"personal": None}, status=200)]
     flow.assert_profile_menu(await flow.choose("retry_profile"))
@@ -534,13 +536,13 @@ async def test_reauth_updates_only_its_own_entry(hass, fake_inpost):
 
 
 async def test_reauth_into_account_of_another_entry_is_refused(hass, fake_inpost):
-    """An entry without a known phone number cannot adopt a configured account."""
+    """An entry without an account ID cannot adopt an already configured account."""
     other = make_entry(phone="987654321")
     other.add_to_hass(hass)
 
     flow = Flow(hass, fake_inpost, SOURCE_REAUTH)
     fake_inpost.token_queue = [REJECTED]
-    flow.entry = make_entry(phone="", unique_id=None, access_token=make_jwt(-10))
+    flow.entry = make_entry(legacy_unique_id=None, access_token=make_jwt(-10))
     flow.entry.add_to_hass(hass)
     await hass.config_entries.async_setup(flow.entry.entry_id)
     await hass.async_block_till_done()
@@ -556,6 +558,7 @@ async def test_reauth_into_account_of_another_entry_is_refused(hass, fake_inpost
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "already_configured"
     assert dict(flow.entry.data) == before
+    assert flow.entry.unique_id is None
 
 
 # =============================================================================

@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Union
 
+from .account import build_account_id
 from .exceptions import parse_api_error
 
 
@@ -529,6 +530,19 @@ class UserProfile:
     personal: Optional[ProfilePersonal] = None
     delivery: Optional[ProfileDelivery] = None
     shopping_active: bool = False
+
+    @property
+    def account_id(self) -> Optional[str]:
+        """Return the ID of the account this profile belongs to.
+
+        None if the profile lacks the phone number or its country prefix
+        (see ``account.py``).
+        """
+        if not self.personal:
+            return None
+        return build_account_id(
+            self.personal.phone_number_prefix, self.personal.phone_number
+        )
 
     def get_favorite_locker_codes(self) -> List[str]:
         """Get list of favorite/active locker codes.

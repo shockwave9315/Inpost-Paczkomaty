@@ -35,7 +35,6 @@ from custom_components.inpost_paczkomaty.models import (
     AuthTokens,
     CarbonFootprintStats,
     DailyCarbonFootprint,
-    EN_ROUTE_STATUSES,
     HttpResponse,
     InPostParcelLocker,
     InPostParcelLockerPointCoordinates,
@@ -43,6 +42,11 @@ from custom_components.inpost_paczkomaty.models import (
     ParcelListItem,
     ParcelsSummary,
     UserProfile,
+)
+from custom_components.inpost_paczkomaty.parcel_status import (
+    STATUS_DELIVERED,
+    ParcelState,
+    classify_parcel,
 )
 from custom_components.inpost_paczkomaty.utils import (
     convert_keys_to_snake_case,
@@ -57,6 +61,8 @@ _LOGGER = logging.getLogger(__name__)
 
 # Parcel fields that are strings in the API contract but safe to coerce
 _STRING_PARCEL_FIELDS = ("shipment_number", "open_code", "qr_code")
+# Distinct unknown parcel statuses reported in the log before giving up
+_MAX_REPORTED_UNKNOWN_STATUSES = 20
 
 
 def _parse_parcel_lockers(body: Any) -> list[InPostParcelLocker]:
@@ -155,6 +161,7 @@ class InPostApiClient:
         self._refresh_lock = asyncio.Lock()
         # Identifiers of problems already reported, to log each of them once
         self._reported_invalid_parcels: set[str] = set()
+        self._reported_unknown_statuses: set[str] = set()
         self._reported_has_more = False
         self._ignored_en_route_statuses = frozenset(
             ignored_en_route_statuses
@@ -432,9 +439,29 @@ class InPostApiClient:
                 len(raw_parcels),
             )
 
-        return self._build_parcels_summary(
+        summary = self._build_parcels_summary(
             parcels, invalid_count=invalid_count, has_more=has_more
         )
+        self._report_unknown_statuses(summary.unknown_statuses)
+        return summary
+
+    def _report_unknown_statuses(self, statuses: List[str]) -> None:
+        """Log parcel statuses the integration cannot classify (once each)."""
+        for status in statuses:
+            if (
+                status in self._reported_unknown_statuses
+                or len(self._reported_unknown_statuses)
+                >= _MAX_REPORTED_UNKNOWN_STATUSES
+            ):
+                continue
+            self._reported_unknown_statuses.add(status)
+            _LOGGER.warning(
+                "InPost API returned a parcel in a status this integration does "
+                "not know: %.80s. Such parcels are part of the all parcels "
+                "count and of unknown_parcels_count, but are neither ready for "
+                "pickup nor en route. Please report the status in an issue",
+                status,
+            )
 
     async def get_profile(self) -> UserProfile:
         """Get user profile with favorite lockers.
@@ -502,18 +529,30 @@ class InPostApiClient:
             has_more: Whether the API signalled further, unfetched parcels.
 
         Returns:
-            ParcelsSummary with parcels grouped by status.
+            ParcelsSummary with parcels grouped by their state. What a status
+            means is decided by ``classify_parcel`` alone.
         """
         ready_for_pickup: Dict[str, Locker] = {}
         en_route: Dict[str, Locker] = {}
 
         all_count = 0
-        ready_count = 0
-        en_route_count = 0
+        unknown_statuses: List[str] = []
 
         # Lists for dashboard display
         ready_for_pickup_list: List[ParcelListItem] = []
         en_route_list: List[ParcelListItem] = []
+
+        def add(
+            group: Dict[str, Locker], listed: List[ParcelListItem], parcel: ApiParcel
+        ) -> None:
+            """File a parcel under its locker and in the dashboard list."""
+            locker_id = parcel.locker_id or "COURIER"
+            locker = group.setdefault(
+                locker_id, Locker(locker_id=locker_id, count=0, parcels=[])
+            )
+            locker.parcels.append(parcel.to_parcel_item())
+            locker.count += 1
+            listed.append(parcel.to_parcel_list_item())
 
         # Carbon footprint tracking
         daily_co2: Dict[str, Dict[str, float]] = {}  # {date: {co2, count}}
@@ -526,35 +565,19 @@ class InPostApiClient:
                 continue
 
             all_count += 1
-            locker_id = parcel.locker_id or "COURIER"
+            state = classify_parcel(parcel)
 
-            if parcel.status == "READY_TO_PICKUP":
-                ready_count += 1
-                if locker_id not in ready_for_pickup:
-                    ready_for_pickup[locker_id] = Locker(
-                        locker_id=locker_id, count=0, parcels=[]
-                    )
-                ready_for_pickup[locker_id].parcels.append(parcel.to_parcel_item())
-                ready_for_pickup[locker_id].count += 1
-                # Add to list for dashboard
-                ready_for_pickup_list.append(parcel.to_parcel_list_item())
-
-            elif (
-                parcel.status in EN_ROUTE_STATUSES
-                and parcel.status not in self._ignored_en_route_statuses
-            ):
-                en_route_count += 1
-                if locker_id not in en_route:
-                    en_route[locker_id] = Locker(
-                        locker_id=locker_id, count=0, parcels=[]
-                    )
-                en_route[locker_id].parcels.append(parcel.to_parcel_item())
-                en_route[locker_id].count += 1
-                # Add to list for dashboard
-                en_route_list.append(parcel.to_parcel_list_item())
+            if state is ParcelState.READY:
+                add(ready_for_pickup, ready_for_pickup_list, parcel)
+            elif state is ParcelState.EN_ROUTE:
+                # The user may leave some en route statuses out of the counts
+                if parcel.status not in self._ignored_en_route_statuses:
+                    add(en_route, en_route_list, parcel)
+            elif state is ParcelState.UNKNOWN:
+                unknown_statuses.append(parcel.status)
 
             # Calculate carbon footprint for DELIVERED parcels
-            if parcel.status == "DELIVERED":
+            if parcel.status == STATUS_DELIVERED:
                 co2_value = parcel.effective_carbon_footprint
                 pickup_date = parcel.pick_up_date_parsed
 
@@ -589,14 +612,16 @@ class InPostApiClient:
 
         return ParcelsSummary(
             all_count=all_count,
-            ready_for_pickup_count=ready_count,
-            en_route_count=en_route_count,
+            ready_for_pickup_count=len(ready_for_pickup_list),
+            en_route_count=len(en_route_list),
             ready_for_pickup=ready_for_pickup,
             en_route=en_route,
             carbon_footprint_stats=carbon_stats,
             ready_for_pickup_list=ready_for_pickup_list,
             en_route_list=en_route_list,
             invalid_parcels_count=invalid_count,
+            unknown_count=len(unknown_statuses),
+            unknown_statuses=sorted(set(unknown_statuses)),
             has_more=has_more,
         )
 

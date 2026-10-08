@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional, Union
 
 from .account import build_account_id
 from .exceptions import parse_api_error
+from .parcel_status import describe_status
 
 
 @dataclass
@@ -98,6 +99,10 @@ class ParcelsSummary:
     en_route_list: List["ParcelListItem"] = field(default_factory=list)
     # Parcels returned by the API that could not be interpreted and were skipped
     invalid_parcels_count: int = 0
+    # Parcels in a status the integration does not know (see parcel_status.py):
+    # part of all_count, but neither ready for pickup nor en route
+    unknown_count: int = 0
+    unknown_statuses: List[str] = field(default_factory=list)
     # True when the API reported more parcels than it returned in this response
     has_more: bool = False
 
@@ -270,18 +275,7 @@ class ApiParcel:
     @property
     def status_description(self) -> str:
         """Get human-readable status description."""
-        status_map = {
-            "READY_TO_PICKUP": "Gotowa do odbioru",
-            "DELIVERED": "Doręczona",
-            "OUT_FOR_DELIVERY": "Wydana do doręczenia",
-            "ADOPTED_AT_SOURCE_BRANCH": "Przyjęta w Centrum Logistycznym",
-            "SENT_FROM_SOURCE_BRANCH": "W trasie",
-            "TAKEN_BY_COURIER": "Odebrana przez Kuriera",
-            "CONFIRMED": "Przesyłka utworzona",
-            "DISPATCHED_BY_SENDER": "Nadana",
-            "PICKUP_REMINDER_SENT": "Przypomnienie o odbiorze",
-        }
-        return status_map.get(self.status, self.status)
+        return describe_status(self.status)
 
     def to_parcel_item(self) -> "ParcelItem":
         """Convert to ParcelItem for ParcelsSummary."""
@@ -423,19 +417,6 @@ class CarbonFootprintStats:
     def total_co2_grams(self) -> float:
         """Get total CO2 in grams."""
         return self.total_co2_kg * 1000
-
-
-# Status constants for parcel filtering
-EN_ROUTE_STATUSES = frozenset(
-    {
-        "OUT_FOR_DELIVERY",
-        "ADOPTED_AT_SOURCE_BRANCH",
-        "SENT_FROM_SOURCE_BRANCH",
-        "TAKEN_BY_COURIER",
-        "CONFIRMED",
-        "DISPATCHED_BY_SENDER",
-    }
-)
 
 
 # =============================================================================

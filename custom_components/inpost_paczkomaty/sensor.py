@@ -175,6 +175,9 @@ class ParcelsListSensor(InPostAccountEntity, SensorEntity):
         - en_route_count: Count of parcels en route
         - invalid_parcels_count: Parcels skipped because the API returned
           them in an unexpected format
+        - unknown_parcels_count: Parcels in a status the integration does not
+          know; they are in neither list
+        - unknown_statuses: The statuses of those parcels
         - has_more: True if the API reported more parcels than it returned
         """
         data = self.coordinator.data
@@ -185,6 +188,8 @@ class ParcelsListSensor(InPostAccountEntity, SensorEntity):
             "ready_for_pickup_count": data.ready_for_pickup_count,
             "en_route_count": data.en_route_count,
             "invalid_parcels_count": data.invalid_parcels_count,
+            "unknown_parcels_count": data.unknown_count,
+            "unknown_statuses": data.unknown_statuses,
             "has_more": data.has_more,
         }
 

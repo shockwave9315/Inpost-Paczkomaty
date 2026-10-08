@@ -98,24 +98,45 @@ inpost_paczkomaty:
 |:-------|:-----|:--------|:------------|
 | `update_interval_seconds` | integer | `30` | How often (in seconds) the integration polls the InPost API for updates. This is an unofficial API of the InPost mobile app; if you do not need near-real-time updates, a larger value (for example `300`) is kinder to it. |
 | `http_timeout_seconds` | integer | `30` | HTTP request timeout in seconds. Increase if you experience timeout errors. |
-| `ignored_en_route_statuses` | list | `["CONFIRMED"]` | List of parcel statuses to exclude from "en route" counts. See [Available Statuses](#available-en-route-statuses) below. |
+| `ignored_en_route_statuses` | list | `["CONFIRMED"]` | List of en route statuses to leave out of the "en route" counts and list. See [Parcel Statuses](#parcel-statuses) below. |
 | `show_only_own_parcels` | boolean | `false` | When `true`, only shows parcels you own - in every sensor, including the all parcels count. When `false`, also shows parcels shared with you by others (e.g., family members). Useful to avoid duplicate counting in multi-user households. |
 | `parcel_lockers_url` | url | [InPost points URL](https://inpost.pl/sites/default/files/points.json) | URL for fetching the parcel lockers list. Only change if InPost changes their endpoint or if you want to use custom parcel lockers list. |
 
-### Available En Route Statuses
+### Parcel Statuses
 
-The following statuses are considered "en route" by default:
+Every status InPost publishes in its [status dictionary](https://api-shipx-pl.easypack24.net/v1/statuses) belongs to
+one of three groups. The group decides which sensors a parcel shows up in:
 
-| Status | Description |
-|:-------|:------------|
-| `CONFIRMED` | Parcel has been confirmed/created by sender (ignored by default) |
-| `DISPATCHED_BY_SENDER` | Parcel dispatched by sender |
-| `TAKEN_BY_COURIER` | Parcel picked up by courier |
-| `ADOPTED_AT_SOURCE_BRANCH` | Parcel received at source branch |
-| `SENT_FROM_SOURCE_BRANCH` | Parcel sent from source branch |
-| `OUT_FOR_DELIVERY` | Parcel is out for delivery |
+| Group | Meaning | Counted as |
+|:------|:--------|:-----------|
+| **Ready for pickup** | The parcel waits for you and can be collected now. | "ready for pickup" counts, the `ready_for_pickup` list (with `open_code` and `qr_code`) |
+| **En route** | InPost has the parcel and is not done with it: on its way, delayed, stored, re-routed or awaiting another delivery attempt. | "en route" counts, the `en_route` list |
+| **Finished** | Delivered, returned to the sender, refused or cancelled. | only the all parcels count (and, for `DELIVERED`, the carbon footprint) |
 
-By default, `CONFIRMED` is ignored because parcels in this status are often just created but not yet physically handed over to InPost.
+**Ready for pickup:** `READY_TO_PICKUP`, `PICKUP_REMINDER_SENT`, `READY_TO_PICKUP_FROM_POK`,
+`READY_TO_PICKUP_FROM_POK_REGISTERED`, `COURIER_AVIZO_IN_CUSTOMER_SERVICE_POINT`.
+
+**En route:**
+
+| Stage | Statuses |
+|:------|:---------|
+| Not handed over to InPost yet | `CREATED`, `OFFERS_PREPARED`, `OFFER_SELECTED`, `CONFIRMED` |
+| On its way | `DISPATCHED_BY_SENDER`, `DISPATCHED_BY_SENDER_TO_POK`, `COLLECTED_FROM_SENDER`, `TAKEN_BY_COURIER`, `TAKEN_BY_COURIER_FROM_POK`, `ADOPTED_AT_SOURCE_BRANCH`, `SENT_FROM_SOURCE_BRANCH`, `ADOPTED_AT_SORTING_CENTER`, `SENT_FROM_SORTING_CENTER`, `ADOPTED_AT_TARGET_BRANCH`, `OUT_FOR_DELIVERY`, `OUT_FOR_DELIVERY_TO_ADDRESS` |
+| Delayed, re-routed or awaiting another attempt | `PICKUP_REMINDER_SENT_ADDRESS`, `DELAY_IN_DELIVERY`, `REDIRECT_TO_BOX`, `CANCELED_REDIRECT_TO_BOX`, `READDRESSED`, `OVERSIZED`, `UNDELIVERED_WRONG_ADDRESS`, `UNDELIVERED_INCOMPLETE_ADDRESS`, `UNDELIVERED_UNKNOWN_RECEIVER`, `UNDELIVERED_COD_CASH_RECEIVER`, `UNDELIVERED_NO_MAILBOX`, `UNDELIVERED_NOT_LIVE_ADDRESS`, `AVIZO` |
+| Not collected in time, outcome still open | `PICKUP_TIME_EXPIRED`, `READY_TO_PICKUP_FROM_BRANCH` |
+| Stored elsewhere until the chosen locker has room | `STACK_IN_BOX_MACHINE`, `STACK_PARCEL_IN_BOX_MACHINE_PICKUP_TIME_EXPIRED`, `UNSTACK_FROM_BOX_MACHINE`, `STACK_IN_CUSTOMER_SERVICE_POINT`, `STACK_PARCEL_PICKUP_TIME_EXPIRED`, `UNSTACK_FROM_CUSTOMER_SERVICE_POINT` |
+
+**Finished:** `DELIVERED`, `RETURN_PICKUP_CONFIRMATION_TO_SENDER`, `CLAIMED`, `REJECTED_BY_RECEIVER`,
+`RETURNED_TO_SENDER`, `TAKEN_BY_COURIER_FROM_CUSTOMER_SERVICE_POINT`, `UNDELIVERED`,
+`UNDELIVERED_LACK_OF_ACCESS_LETTERBOX`, `CANCELED`.
+
+A status that is not on these lists - including InPost's own placeholders `OTHER` and `MISSING` - is **unknown**. An
+unknown parcel is never dropped silently: it stays in the all parcels count, is counted in the `unknown_parcels_count`
+attribute of the parcels list sensor (its status is listed in `unknown_statuses`), and the status is written to the log
+once. Please report such a status in an issue.
+
+By default, `CONFIRMED` is left out of the en route counts because parcels in this status are often just created but
+not yet physically handed over to InPost. Any en route status can be listed in `ignored_en_route_statuses`.
 
 **Example:** To ignore both `CONFIRMED` and `DISPATCHED_BY_SENDER`:
 
@@ -342,9 +363,9 @@ well.
 
 | Platform | Entity                                                 | Description                                                                                              |
 |:---------|:-------------------------------------------------------|:---------------------------------------------------------------------------------------------------------|
-| `sensor` | `inpost_[PHONE_NUMBER]_all_parcels_count`              | Total number of all tracked parcels bound to your phone number(Delivered + En Route + Ready for Pickup). |
-| `sensor` | `inpost_[PHONE_NUMBER]_en_route_parcels_count`         | Number of parcels currently en route to any locker.                                                      |
-| `sensor` | `inpost_[PHONE_NUMBER]_ready_for_pickup_parcels_count` | Number of parcels ready for pickup across all configured lockers.                                        |
+| `sensor` | `inpost_[PHONE_NUMBER]_all_parcels_count`              | Total number of all tracked parcels bound to your phone number, whatever their status.                   |
+| `sensor` | `inpost_[PHONE_NUMBER]_en_route_parcels_count`         | Number of parcels [en route](#parcel-statuses) to any destination.                                       |
+| `sensor` | `inpost_[PHONE_NUMBER]_ready_for_pickup_parcels_count` | Number of parcels [ready for pickup](#parcel-statuses) at any destination.                               |
 | `sensor` | `inpost_[PHONE_NUMBER]_parcels_list`                   | Parcels list sensor with detailed parcel data for dashboard display (see attributes below).              |
 
 #### Parcels List Sensor Attributes
@@ -358,6 +379,8 @@ The `parcels_list` sensor provides detailed parcel information for advanced dash
 | `ready_for_pickup_count` | int   | Number of parcels ready for pickup.                                      |
 | `en_route_count`         | int   | Number of parcels en route.                                              |
 | `invalid_parcels_count`  | int   | Parcels skipped because InPost returned them in an unexpected format (details in the log). |
+| `unknown_parcels_count`  | int   | Parcels in a [status the integration does not know](#parcel-statuses); they are in neither list. |
+| `unknown_statuses`       | list  | The statuses of those parcels.                                           |
 | `has_more`               | bool  | `true` if InPost reported more tracked parcels than it returned; those are not shown.     |
 
 > **Privacy:** the `ready_for_pickup` and `en_route` lists (which contain pickup codes, QR payloads and phone numbers)
@@ -383,8 +406,8 @@ Each parcel in the list contains:
 | `pickup_point_street`      | Street name of pickup point (e.g., "Wieżycka").            |
 | `pickup_point_building`    | Building number of pickup point (e.g., "8").               |
 | `pickup_point_post_code`   | Postal code of pickup point (e.g., "80-180").              |
-| `open_code`                | Code to open the locker (only for ready_to_pickup).        |
-| `qr_code`                  | QR code data string (only for ready_to_pickup).            |
+| `open_code`                | Code to open the locker (when InPost provides one).        |
+| `qr_code`                  | QR code data string (when InPost provides one).            |
 | `stored_date`              | When parcel was stored in locker (ISO format).             |
 
 ### Carbon Footprint Entities
@@ -431,7 +454,7 @@ For each configured locker (identified by `[LOCKER_ID]`), the following entities
 
 ## Features
 
-* Monitor the **total** number of parcels associated with your account (Delivered + En Route + Ready for Pickup).
+* Monitor the **total** number of parcels associated with your account, whatever their status.
 * Monitor the number of parcels **en route** across all destinations.
 * Monitor configured lockers:
     * Count of **en route** parcels destined for the locker.
@@ -447,6 +470,7 @@ For each configured locker (identified by `[LOCKER_ID]`), the following entities
 | "You signed in to a different InPost account" during re-authentication | The login belongs to another phone number (the country prefix counts) than the entry. Sign in to the entry's own account, or add the other account as a new entry. |
 | Entities are **unavailable** | The last update failed (InPost unreachable, rate limited, unexpected response). The integration retries on its own with an increasing delay of up to one hour; the reason is logged once when the outage starts. |
 | `invalid_parcels_count` is above 0 | InPost returned a parcel the integration could not read. The other parcels are unaffected. The log names the field at fault - please include it in an issue. |
+| `unknown_parcels_count` is above 0 | InPost returned a parcel in a status the integration does not know yet, so it is counted as neither ready for pickup nor en route. The status is in `unknown_statuses` and in the log - please include it in an issue. |
 | `has_more` is `true` | InPost returned only part of the tracked parcels. Fetching further pages is not supported yet. |
 | A locker is missing from the list | The dropdown only shows the 300 nearest lockers and InPost's public list may be out of date. Type the locker code manually. |
 | "This InPost account is already configured" | The account already has an entry. Use *Configure* on it to change lockers. |

@@ -110,6 +110,28 @@ def test_supported_versions_are_declared_consistently():
     assert PYPROJECT["tool"]["ruff"]["target-version"] == f"py{python.replace('.', '')}"
 
 
+def test_release_configuration_continues_the_existing_version_line():
+    """The release workflow must produce the next 0.x version, not 1.0.0.
+
+    .releaserc.json cannot carry comments, so the reasons live here:
+
+    * The fork's releases are tagged without a "v" prefix (0.4.3).
+      semantic-release looks for "v${version}" by default, finds no previous
+      release and starts over at 1.0.0.
+    * While the integration is at 0.x, a breaking change raises the minor
+      version. By default a "BREAKING CHANGE" footer - there is one in the
+      0.5.0 history - forces a major release.
+    """
+    release = json.loads((ROOT / ".releaserc.json").read_text())
+    assert release["tagFormat"] == "${version}"
+    assert "shockwave9315/Inpost-Paczkomaty" in release["repositoryUrl"]
+
+    analyzer = release["plugins"][0]
+    assert analyzer[0] == "@semantic-release/commit-analyzer"
+    assert {"breaking": True, "release": "minor"} in analyzer[1]["releaseRules"]
+    assert MANIFEST["version"].startswith("0.")  # revisit the rule at 1.0.0
+
+
 def test_translations_cover_strings():
     """Every string key exists in each translation file."""
 

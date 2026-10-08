@@ -1,10 +1,21 @@
 {
     "repositoryUrl": "https://github.com/shockwave9315/Inpost-Paczkomaty.git",
+    "tagFormat": "${version}",
     "branches": [
         "master"
     ],
     "plugins": [
-        "@semantic-release/commit-analyzer",
+        [
+            "@semantic-release/commit-analyzer",
+            {
+                "releaseRules": [
+                    {
+                        "breaking": true,
+                        "release": "minor"
+                    }
+                ]
+            }
+        ],
         "@semantic-release/release-notes-generator",
         "@semantic-release/changelog",
         [

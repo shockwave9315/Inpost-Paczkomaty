@@ -23,6 +23,24 @@ def auto_enable_custom_integrations(recorder_mock, enable_custom_integrations):
     pass
 
 
+@pytest.fixture(autouse=True)
+def no_home_assistant_usage_reports(caplog):
+    """Fail any test in which Home Assistant flags how the integration uses it.
+
+    Home Assistant only logs a call to an API it is about to remove; without
+    this no assertion would ever notice.
+    """
+    yield
+    reports = [
+        record.getMessage()
+        for phase in ("setup", "call")
+        for record in caplog.get_records(phase)
+        if record.name == "homeassistant.helpers.frame"
+        and "custom integration 'inpost_paczkomaty'" in record.getMessage()
+    ]
+    assert not reports, reports
+
+
 @pytest.fixture
 def fake_inpost():
     """Replace the HTTP transport with a programmable fake InPost backend."""

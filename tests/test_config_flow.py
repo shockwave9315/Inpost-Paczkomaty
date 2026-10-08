@@ -1,12 +1,13 @@
 """Tests for the config, re-authentication and options flows."""
 
+from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from homeassistant.config_entries import SOURCE_USER, ConfigEntryState
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
-from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import device_registry as dr, entity_registry as er
 
 from custom_components.inpost_paczkomaty.const import DOMAIN
 from custom_components.inpost_paczkomaty.models import HttpResponse
@@ -470,6 +471,70 @@ async def test_options_flow_adds_and_removes_lockers(hass, fake_inpost):
     assert len(ids) == 14
     assert f"sensor.inpost_{ACCOUNT_SLUG}_gda145m_en_route_count" in ids
     assert not any(LOCKER.lower() in entity_id for entity_id in ids)
+
+
+async def test_removing_a_locker_in_options_removes_its_device(hass, fake_inpost):
+    """The dropped locker's device and entities go; the rest is left alone."""
+    entry = await _loaded_entry(hass, lockers=(LOCKER, "GDA145M"))
+    registry = dr.async_get(hass)
+
+    def devices() -> dict[str, dr.DeviceEntry]:
+        return {
+            next(iter(device.identifiers))[1]: device
+            for device in dr.async_entries_for_config_entry(registry, entry.entry_id)
+        }
+
+    before = devices()
+    account = before[entry.entry_id]
+    kept = before[f"{entry.entry_id}_{LOCKER}"]
+    dropped = before[f"{entry.entry_id}_GDA145M"]
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    with patch.object(
+        registry, "async_remove_device", wraps=registry.async_remove_device
+    ) as remove_device:
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"], {"lockers": [LOCKER]}
+        )
+        await hass.async_block_till_done()
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert entry.state is ConfigEntryState.LOADED
+    remove_device.assert_called_once_with(dropped.id)
+    after = devices()
+    assert set(after) == {entry.entry_id, f"{entry.entry_id}_{LOCKER}"}
+    assert after[entry.entry_id].id == account.id
+    assert after[f"{entry.entry_id}_{LOCKER}"].id == kept.id
+    assert after[f"{entry.entry_id}_{LOCKER}"].via_device_id == account.id
+    entities = er.async_entries_for_config_entry(er.async_get(hass), entry.entry_id)
+    assert len(entities) == 14
+    assert {e.device_id for e in entities} == {account.id, kept.id}
+
+
+async def test_setup_options_and_reload_raise_no_home_assistant_reports(
+    hass, fake_inpost, caplog
+):
+    """Home Assistant has nothing to say about how its registries are used.
+
+    Regression: device links (``via_device``) and the removal of a locker's
+    device went through calls Home Assistant 2026.10 reports as deprecated.
+    """
+    entry = await _loaded_entry(hass, lockers=(LOCKER, "GDA145M"))
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    await hass.config_entries.options.async_configure(
+        result["flow_id"], {"lockers": [LOCKER, "WAW01M"]}
+    )
+    await hass.async_block_till_done()
+    assert await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+    assert not [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "homeassistant.helpers.frame"
+    ]
 
 
 async def test_options_flow_keeps_locker_data_when_list_is_unavailable(

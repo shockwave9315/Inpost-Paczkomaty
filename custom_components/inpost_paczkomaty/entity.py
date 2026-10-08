@@ -4,9 +4,13 @@ Identity scheme (all scoped to the config entry, so several accounts can track
 the same parcel locker without colliding):
 
 * account device  - identifier ``<entry_id>``
-* locker device   - identifier ``<entry_id>_<LOCKER>``
+* locker device   - identifier ``<entry_id>_<LOCKER>``, linked to the account
+  device
 * account entity  - unique_id ``<entry_id>_account_<key>``
 * locker entity   - unique_id ``<entry_id>_locker_<LOCKER>_<key>``
+
+The devices are registered by the integration setup before any entity exists
+(``_async_register_devices``); an entity only names the device it belongs to.
 
 Devices are named after the account ID (see ``account.py``) and entity names
 are relative to the device name (``has_entity_name``). For the account
@@ -19,7 +23,7 @@ from __future__ import annotations
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity import Entity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -50,7 +54,7 @@ def account_label(entry: ConfigEntry) -> str:
     """Return the label identifying the account in device names.
 
     This is the account ID: setup makes sure every entry has one before any
-    entity is created.
+    device is registered.
     """
     return str(entry.unique_id)
 
@@ -87,11 +91,7 @@ class InPostAccountEntity(CoordinatorEntity[InpostDataCoordinator]):
         super().__init__(coordinator)
         self._attr_unique_id = f"{account_unique_id_prefix(entry)}{key}"
         self._attr_device_info = DeviceInfo(
-            identifiers={account_device_identifier(entry)},
-            name=f"InPost {account_label(entry)}",
-            manufacturer="InPost",
-            model="Account",
-            entry_type=DeviceEntryType.SERVICE,
+            identifiers={account_device_identifier(entry)}
         )
 
 
@@ -105,11 +105,7 @@ class InPostLockerEntityMixin(Entity):
         self._locker_id = locker_id
         self._attr_unique_id = f"{locker_unique_id_prefix(entry, locker_id)}{key}"
         self._attr_device_info = DeviceInfo(
-            identifiers={locker_device_identifier(entry, locker_id)},
-            name=f"InPost {account_label(entry)} {locker_id}",
-            manufacturer="InPost",
-            model="Paczkomat",
-            via_device=account_device_identifier(entry),
+            identifiers={locker_device_identifier(entry, locker_id)}
         )
 
 

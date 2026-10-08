@@ -40,6 +40,7 @@ from .const import (
 from .coordinator import InpostDataCoordinator
 from .entity import (
     account_device_identifier,
+    account_label,
     account_unique_id_prefix,
     get_tracked_lockers,
     locker_device_identifier,
@@ -93,6 +94,9 @@ async def _async_ensure_account_id(
     hass: HomeAssistant, entry: ConfigEntry, api_client: InPostApiClient
 ) -> None:
     """Make sure the entry knows which InPost account it belongs to.
+
+    This comes first in the setup: until the account is known, none of its
+    parcels are requested and no device or entity is created for it.
 
     Entries created by the config flow carry the account ID as their unique
     ID and need nothing. Entries created before 0.5.0 stored the national
@@ -160,9 +164,36 @@ def _async_cleanup_registries(hass: HomeAssistant, entry: ConfigEntry) -> None:
     for device in dr.async_entries_for_config_entry(device_registry, entry.entry_id):
         if not device.identifiers & device_identifiers:
             _LOGGER.debug("Removing stale device %s", device.name)
-            device_registry.async_update_device(
-                device.id, remove_config_entry_id=entry.entry_id
-            )
+            device_registry.async_remove_device(device.id)
+
+
+@callback
+def _async_register_devices(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Register the account device and a device for every tracked locker.
+
+    The integration does this itself instead of leaving it to the entities: a
+    locker device refers to the account device by its registry ID, so the
+    account device has to exist first, whichever platform is set up first.
+    """
+    device_registry = dr.async_get(hass)
+    label = account_label(entry)
+    account_device = device_registry.async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={account_device_identifier(entry)},
+        name=f"InPost {label}",
+        manufacturer="InPost",
+        model="Account",
+        entry_type=dr.DeviceEntryType.SERVICE,
+    )
+    for locker_id in get_tracked_lockers(entry):
+        device_registry.async_get_or_create(
+            config_entry_id=entry.entry_id,
+            identifiers={locker_device_identifier(entry, locker_id)},
+            name=f"InPost {label} {locker_id}",
+            manufacturer="InPost",
+            model="Paczkomat",
+            via_device_id=account_device.id,
+        )
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -225,14 +256,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         parcel_lockers_url=parcel_lockers_url,
         show_only_own_parcels=show_only_own_parcels,
     )
-    coordinator = InpostDataCoordinator(
-        hass, api_client, update_interval, config_entry=entry
-    )
 
     try:
-        await coordinator.async_config_entry_first_refresh()
         await _async_ensure_account_id(hass, entry, api_client)
+        coordinator = InpostDataCoordinator(
+            hass, api_client, update_interval, config_entry=entry
+        )
+        await coordinator.async_config_entry_first_refresh()
         _async_cleanup_registries(hass, entry)
+        _async_register_devices(hass, entry)
         entry.runtime_data = coordinator
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     except BaseException:

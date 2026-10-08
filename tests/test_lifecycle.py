@@ -7,9 +7,11 @@ from unittest.mock import patch
 import pytest
 from homeassistant.components.recorder import get_instance
 from homeassistant.config_entries import SOURCE_REAUTH, ConfigEntryState
-from homeassistant.core import HomeAssistant
+from homeassistant.const import Platform
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 
+import custom_components.inpost_paczkomaty as integration
 from custom_components.inpost_paczkomaty.const import DOMAIN
 from custom_components.inpost_paczkomaty.exceptions import InPostApiError
 from custom_components.inpost_paczkomaty.http_client import HttpClient
@@ -52,6 +54,22 @@ def entity_ids(hass: HomeAssistant, entry) -> set[str]:
     return {
         e.entity_id for e in er.async_entries_for_config_entry(registry, entry.entry_id)
     }
+
+
+def devices_of(hass: HomeAssistant, entry) -> dict[str, dr.DeviceEntry]:
+    """Return the entry's devices keyed by their identifier ("" = the account)."""
+    registry = dr.async_get(hass)
+    return {
+        next(iter(device.identifiers))[1].removeprefix(entry.entry_id).lstrip("_"): (
+            device
+        )
+        for device in dr.async_entries_for_config_entry(registry, entry.entry_id)
+    }
+
+
+def requested_paths(fake_inpost) -> list[str]:
+    """Return the API paths requested so far, in order."""
+    return [call["url"].split(".net", 1)[-1] for call in fake_inpost.calls]
 
 
 # =============================================================================
@@ -201,7 +219,9 @@ async def test_legacy_entry_waits_until_it_can_be_identified(
 
     assert entry.state is ConfigEntryState.SETUP_RETRY
     assert entry.unique_id == PHONE
+    assert fake_inpost.count(PARCELS_PATH) == 0  # no data of an unknown account
     assert not entity_ids(hass, entry)
+    assert not devices_of(hass, entry)
     assert not reauth_flows(hass)
 
     assert await hass.config_entries.async_reload(entry.entry_id)
@@ -222,6 +242,18 @@ async def test_legacy_entry_with_rejected_credentials_starts_reauth(hass, fake_i
     assert entry.state is ConfigEntryState.SETUP_ERROR
     assert entry.unique_id is None
     assert len(reauth_flows(hass)) == 1
+    assert fake_inpost.count(PARCELS_PATH) == 0
+
+
+async def test_legacy_entry_is_identified_before_its_parcels_are_requested(
+    hass, fake_inpost
+):
+    """Setup order: who is this account first, its parcels second."""
+    entry = make_entry(legacy_unique_id=PHONE)
+    await setup_entry(hass, entry)
+
+    assert entry.state is ConfigEntryState.LOADED
+    assert requested_paths(fake_inpost) == [PROFILE_PATH, PARCELS_PATH]
 
 
 async def test_legacy_duplicate_of_a_configured_account_is_not_loaded(
@@ -236,6 +268,9 @@ async def test_legacy_duplicate_of_a_configured_account_is_not_loaded(
     assert current.state is ConfigEntryState.LOADED
     assert duplicate.state is ConfigEntryState.SETUP_ERROR
     assert duplicate.unique_id == PHONE
+    assert fake_inpost.count(PARCELS_PATH) == 1  # only the configured entry's
+    assert not entity_ids(hass, duplicate)
+    assert not devices_of(hass, duplicate)
     assert "already set up in another entry" in caplog.text
     assert "already in use" not in caplog.text  # HA's duplicate unique ID error
 
@@ -281,6 +316,131 @@ async def test_large_parcel_lists_are_not_recorded(hass, fake_inpost, caplog):
     assert len(hass.states.get(PARCELS_LIST).attributes["ready_for_pickup"]) == 60
     await hass.async_add_executor_job(get_instance(hass).block_till_done)
     assert "exceed maximum size" not in caplog.text
+
+
+# =============================================================================
+# Device registry
+# =============================================================================
+
+
+async def test_devices_are_registered_before_any_platform_is_set_up(hass, fake_inpost):
+    """Setup creates the account device first, then the lockers linked to it."""
+    entry = make_entry(lockers=(LOCKER, "GDA145M"))
+    created: list[str] = []
+
+    @callback
+    def record_created(event) -> None:
+        if event.data["action"] == "create":
+            created.append(event.data["device_id"])
+
+    hass.bus.async_listen(dr.EVENT_DEVICE_REGISTRY_UPDATED, record_created)
+    before_platforms: dict[str, dr.DeviceEntry] = {}
+    forward = hass.config_entries.async_forward_entry_setups
+
+    async def forward_after_snapshot(config_entry, platforms) -> None:
+        before_platforms.update(devices_of(hass, config_entry))
+        await forward(config_entry, platforms)
+
+    with patch.object(
+        hass.config_entries, "async_forward_entry_setups", forward_after_snapshot
+    ):
+        await setup_entry(hass, entry)
+
+    assert entry.state is ConfigEntryState.LOADED
+    devices = devices_of(hass, entry)
+    assert set(devices) == {"", LOCKER, "GDA145M"}
+    # Nothing is left for the entities to create
+    assert {d.id for d in before_platforms.values()} == {d.id for d in devices.values()}
+    assert len(created) == 3
+
+    account = devices[""]
+    assert created[0] == account.id
+    assert account.via_device_id is None
+    assert account.entry_type is dr.DeviceEntryType.SERVICE
+    assert (account.name, account.manufacturer, account.model) == (
+        "InPost +48123456789",
+        "InPost",
+        "Account",
+    )
+    for code in (LOCKER, "GDA145M"):
+        assert devices[code].via_device_id == account.id
+        assert devices[code].name == f"InPost +48123456789 {code}"
+        assert devices[code].model == "Paczkomat"
+
+    # Every entity sits on one of the registered devices
+    registry = er.async_get(hass)
+    entities = er.async_entries_for_config_entry(registry, entry.entry_id)
+    assert len([e for e in entities if e.device_id == account.id]) == 7
+    for code in (LOCKER, "GDA145M"):
+        assert len([e for e in entities if e.device_id == devices[code].id]) == 7
+
+
+@pytest.mark.parametrize(
+    "platforms",
+    [
+        [Platform.BINARY_SENSOR, Platform.SENSOR],
+        [Platform.BINARY_SENSOR],
+    ],
+    ids=["binary-sensor-first", "binary-sensor-only"],
+)
+async def test_locker_devices_do_not_depend_on_the_platform_order(
+    hass, fake_inpost, platforms
+):
+    """The account device is not a by-product of the sensor platform."""
+    entry = make_entry()
+    with patch.object(integration, "PLATFORMS", platforms):
+        await setup_entry(hass, entry)
+
+        assert entry.state is ConfigEntryState.LOADED
+        devices = devices_of(hass, entry)
+        assert devices[LOCKER].via_device_id == devices[""].id
+        assert devices[""].name == "InPost +48123456789"
+        assert (
+            f"binary_sensor.inpost_{ACCOUNT_SLUG}_{LOCKER.lower()}_ready_for_pickup"
+            in (entity_ids(hass, entry))
+        )
+        assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_reload_keeps_devices_and_their_links(hass, fake_inpost):
+    """A reload re-registers the same devices instead of creating new ones."""
+    entry = make_entry(lockers=(LOCKER, "GDA145M"))
+    await setup_entry(hass, entry)
+    before = {
+        key: (device.id, device.via_device_id, device.name)
+        for key, device in devices_of(hass, entry).items()
+    }
+    entities_before = entity_ids(hass, entry)
+
+    assert await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert entry.state is ConfigEntryState.LOADED
+    assert {
+        key: (device.id, device.via_device_id, device.name)
+        for key, device in devices_of(hass, entry).items()
+    } == before
+    assert entity_ids(hass, entry) == entities_before
+    assert hass.states.get(READY_COUNT).state == "1"
+
+
+async def test_identified_legacy_entry_renames_its_devices(hass, fake_inpost):
+    """Devices follow the account ID once an old entry learns it."""
+    entry = make_entry(legacy_unique_id=PHONE)
+    entry.add_to_hass(hass)
+    registry = dr.async_get(hass)
+    old = registry.async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={(DOMAIN, entry.entry_id)},
+        name=f"InPost {PHONE}",
+    )
+    await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    devices = devices_of(hass, entry)
+    assert devices[""].id == old.id
+    assert devices[""].name == "InPost +48123456789"
+    assert devices[LOCKER].via_device_id == old.id
 
 
 # =============================================================================

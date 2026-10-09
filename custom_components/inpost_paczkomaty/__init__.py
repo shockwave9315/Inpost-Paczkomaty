@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from time import monotonic
 from typing import Any
 
 import voluptuous as vol
@@ -18,7 +19,7 @@ from homeassistant.exceptions import (
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 import homeassistant.helpers.config_validation as cv
 
-from .account import is_account_id
+from .account import identified_entry_title, is_account_id
 from .api import InPostApiClient
 from .const import (
     CONF_ACCESS_TOKEN,
@@ -30,6 +31,7 @@ from .const import (
     CONF_TOKEN_EXPIRES_IN,
     CONF_TOKEN_TYPE,
     CONF_UPDATE_INTERVAL,
+    DATA_SETUP_RATE_LIMITS,
     DEFAULT_HTTP_TIMEOUT,
     DEFAULT_IGNORED_EN_ROUTE_STATUSES,
     DEFAULT_PARCEL_LOCKERS_URL,
@@ -46,7 +48,7 @@ from .entity import (
     locker_device_identifier,
     locker_unique_id_prefix,
 )
-from .exceptions import ApiAuthError, ApiClientError
+from .exceptions import ApiAuthError, ApiClientError, RateLimitedError
 from .models import AuthTokens
 
 _LOGGER = logging.getLogger(__name__)
@@ -136,7 +138,11 @@ async def _async_ensure_account_id(
             "This InPost account is already set up in another entry; "
             "remove one of the two"
         )
-    hass.config_entries.async_update_entry(entry, unique_id=account_id)
+    hass.config_entries.async_update_entry(
+        entry,
+        unique_id=account_id,
+        title=identified_entry_title(entry, account_id),
+    )
 
 
 @callback
@@ -201,6 +207,17 @@ def _async_register_devices(hass: HomeAssistant, entry: ConfigEntry) -> None:
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up InPost Paczkomaty from a config entry."""
     _LOGGER.debug("Setting up InPost Paczkomaty entry %s", entry.entry_id)
+
+    # ConfigEntry retries setup independently of a failed coordinator's interval.
+    # Keep the API deadline outside the discarded client/coordinator and stop
+    # early retries before any profile, token or parcel request can be sent.
+    deadlines = hass.data.get(DATA_SETUP_RATE_LIMITS, {})
+    remaining = deadlines.get(entry.entry_id, 0) - monotonic()
+    if remaining > 0:
+        raise ConfigEntryNotReady(
+            f"InPost API rate limited; waiting {remaining:.0f} s before contacting API"
+        )
+    deadlines.pop(entry.entry_id, None)
 
     # Get configuration from configuration.yaml or use defaults
     domain_config = hass.data.get(DOMAIN, {})
@@ -269,11 +286,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _async_register_devices(hass, entry)
         entry.runtime_data = coordinator
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-    except BaseException:
+    except BaseException as err:
+        # First refresh wraps the API error in UpdateFailed/ConfigEntryNotReady;
+        # legacy profile identification wraps it in ConfigEntryNotReady directly.
+        cause: BaseException | None = err
+        while cause is not None:
+            if isinstance(cause, RateLimitedError) and cause.retry_after is not None:
+                hass.data.setdefault(DATA_SETUP_RATE_LIMITS, {})[entry.entry_id] = (
+                    monotonic() + cause.retry_after
+                )
+                break
+            cause = cause.__cause__
         # Setup did not complete, so async_unload_entry will not run.
         await api_client.close()
         raise
 
+    hass.data.get(DATA_SETUP_RATE_LIMITS, {}).pop(entry.entry_id, None)
     return True
 
 

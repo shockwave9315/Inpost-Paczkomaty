@@ -194,6 +194,7 @@ async def test_legacy_entry_is_identified_from_the_profile(
 
     assert entry.state is ConfigEntryState.LOADED
     assert entry.unique_id == "+380123456789"
+    assert entry.title == "InPost: +380123456789"
     assert fake_inpost.count(PROFILE_PATH) == 1
     assert "sensor.inpost_380123456789_parcels_list" in entity_ids(hass, entry)
 

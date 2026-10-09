@@ -19,6 +19,7 @@ silently - it is counted and reported (see ``InPostApiClient``).
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
@@ -35,6 +36,21 @@ class ParcelState(StrEnum):
     UNKNOWN = "unknown"
 
 
+@dataclass(frozen=True)
+class ParcelClassification:
+    """Account state and whether the reported point can receive that state."""
+
+    state: ParcelState
+    assign_to_locker: bool
+
+
+# Collection is possible, but no captured payload establishes whether
+# pickUpPoint identifies the temporary location or the original destination.
+_UNASSIGNED_READY_STATUSES = frozenset(
+    {"STACK_IN_BOX_MACHINE", "STACK_IN_CUSTOMER_SERVICE_POINT"}
+)
+
+
 # The one terminal status the carbon footprint statistics are built from
 STATUS_DELIVERED = "DELIVERED"
 
@@ -46,6 +62,8 @@ _STATUSES: dict[ParcelState, dict[str, str]] = {
         "READY_TO_PICKUP_FROM_POK": "Czeka na odbiór w PaczkoPunkcie",
         "READY_TO_PICKUP_FROM_POK_REGISTERED": "Czeka na odbiór w PaczkoPunkcie",
         "COURIER_AVIZO_IN_CUSTOMER_SERVICE_POINT": "Oczekuje na odbiór",
+        "STACK_IN_BOX_MACHINE": "Paczka magazynowana w tymczasowym automacie Paczkomat",
+        "STACK_IN_CUSTOMER_SERVICE_POINT": "Paczka magazynowana w PaczkoPunkcie",
     },
     ParcelState.EN_ROUTE: {
         # Not handed over to InPost yet
@@ -83,15 +101,13 @@ _STATUSES: dict[ParcelState, dict[str, str]] = {
         # Not collected in time: still with InPost, the outcome is open
         "PICKUP_TIME_EXPIRED": "Upłynął termin odbioru",
         "READY_TO_PICKUP_FROM_BRANCH": "Paczka nieodebrana – czeka w Oddziale",
-        # Stored elsewhere until the chosen parcel locker has room
-        "STACK_IN_BOX_MACHINE": "Paczka magazynowana w tymczasowym automacie Paczkomat",
+        # Temporary storage expired, or returning to the chosen parcel locker
         "STACK_PARCEL_IN_BOX_MACHINE_PICKUP_TIME_EXPIRED": (
             "Upłynął termin odbioru paczki magazynowanej"
         ),
         "UNSTACK_FROM_BOX_MACHINE": (
             "Paczka w drodze do pierwotnie wybranego automatu Paczkomat"
         ),
-        "STACK_IN_CUSTOMER_SERVICE_POINT": "Paczka magazynowana w PaczkoPunkcie",
         "STACK_PARCEL_PICKUP_TIME_EXPIRED": (
             "Upłynął termin odbioru paczki magazynowanej"
         ),
@@ -122,15 +138,18 @@ _DESCRIPTION_BY_STATUS: dict[str, str] = {
 }
 
 
-def classify_parcel(parcel: ApiParcel) -> ParcelState:
-    """Return the state of a parcel.
+def classify_parcel(parcel: ApiParcel) -> ParcelClassification:
+    """Return account state and whether it can be assigned to a locker.
 
     The whole parcel is passed, not only its status, so that other signals the
     API sends can be taken into account here without touching any caller. The
     obvious candidate is ``status_group``; it is not used yet because no
     payload available to this project shows which values it takes.
     """
-    return _STATE_BY_STATUS.get(parcel.status, ParcelState.UNKNOWN)
+    return ParcelClassification(
+        state=_STATE_BY_STATUS.get(parcel.status, ParcelState.UNKNOWN),
+        assign_to_locker=parcel.status not in _UNASSIGNED_READY_STATUSES,
+    )
 
 
 def describe_status(status: str) -> str:

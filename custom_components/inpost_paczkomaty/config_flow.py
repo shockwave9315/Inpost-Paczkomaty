@@ -21,7 +21,7 @@ from homeassistant.helpers.selector import (
     TextSelectorConfig,
 )
 
-from .account import is_account_id
+from .account import identified_entry_title, is_account_id
 from .api import InPostApiClient
 from .const import (
     CONF_ACCESS_TOKEN,
@@ -530,6 +530,7 @@ class InPostConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return self.async_update_reload_and_abort(
             entry,
             unique_id=account_id,
+            title=identified_entry_title(entry, account_id),
             data_updates=self._data,
         )
 

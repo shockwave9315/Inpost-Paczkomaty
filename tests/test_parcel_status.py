@@ -56,6 +56,8 @@ READY = [
     "PICKUP_REMINDER_SENT",
     "READY_TO_PICKUP_FROM_POK",
     "COURIER_AVIZO_IN_CUSTOMER_SERVICE_POINT",
+    "STACK_IN_BOX_MACHINE",
+    "STACK_IN_CUSTOMER_SERVICE_POINT",
 ]
 EN_ROUTE = [
     "DISPATCHED_BY_SENDER",
@@ -67,8 +69,11 @@ EN_ROUTE = [
     "SENT_FROM_SORTING_CENTER",
     "ADOPTED_AT_TARGET_BRANCH",
     "OUT_FOR_DELIVERY",
-    "STACK_IN_BOX_MACHINE",
     "PICKUP_TIME_EXPIRED",
+    "STACK_PARCEL_IN_BOX_MACHINE_PICKUP_TIME_EXPIRED",
+    "UNSTACK_FROM_BOX_MACHINE",
+    "STACK_PARCEL_PICKUP_TIME_EXPIRED",
+    "UNSTACK_FROM_CUSTOMER_SERVICE_POINT",
 ]
 TERMINAL = ["DELIVERED", "RETURNED_TO_SENDER", "CANCELED", "REJECTED_BY_RECEIVER"]
 UNKNOWN = ["SOMETHING_INPOST_ADDS_LATER", "OTHER", "ready_to_pickup", ""]
@@ -95,7 +100,7 @@ def parcel(status: str) -> ApiParcel:
 )
 def test_classify_parcel(statuses, state):
     assert {
-        status: classify_parcel(parcel(status)) for status in statuses
+        status: classify_parcel(parcel(status)).state for status in statuses
     } == dict.fromkeys(statuses, state)
 
 
@@ -128,7 +133,7 @@ def test_readme_documents_exactly_the_classified_statuses():
 
 def test_delivered_is_terminal_and_still_named_for_the_carbon_footprint():
     assert STATUS_DELIVERED == "DELIVERED"
-    assert classify_parcel(parcel(STATUS_DELIVERED)) is ParcelState.TERMINAL
+    assert classify_parcel(parcel(STATUS_DELIVERED)).state is ParcelState.TERMINAL
 
 
 def test_status_descriptions():
@@ -212,6 +217,7 @@ async def test_parcel_waiting_in_the_locker_is_ready_for_pickup(
     listed = hass.states.get(f"{SENSOR}_parcels_list").attributes["ready_for_pickup"][0]
     assert listed["open_code"] == "680001"
     assert listed["qr_code"] == "P|+48123456789|680001"
+    assert listed["pickup_point_unverified"] is False
 
 
 @pytest.mark.parametrize(
@@ -221,7 +227,10 @@ async def test_parcel_waiting_in_the_locker_is_ready_for_pickup(
         "ADOPTED_AT_SORTING_CENTER",
         "SENT_FROM_SORTING_CENTER",
         "ADOPTED_AT_TARGET_BRANCH",
-        "STACK_IN_BOX_MACHINE",
+        "STACK_PARCEL_IN_BOX_MACHINE_PICKUP_TIME_EXPIRED",
+        "UNSTACK_FROM_BOX_MACHINE",
+        "STACK_PARCEL_PICKUP_TIME_EXPIRED",
+        "UNSTACK_FROM_CUSTOMER_SERVICE_POINT",
         "OUT_FOR_DELIVERY",
     ],
 )

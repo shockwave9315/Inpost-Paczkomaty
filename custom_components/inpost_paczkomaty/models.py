@@ -53,12 +53,14 @@ class ParcelListItem:
     pickup_point_building: Optional[str]
     pickup_point_post_code: Optional[str]
 
-    # Codes for pickup (only for READY_TO_PICKUP)
+    # Codes for pickup
     open_code: Optional[str]
     qr_code: Optional[str]
 
     # Dates
     stored_date: Optional[str]  # ISO date string
+    # The reported point must not be presented as a confirmed pickup location.
+    pickup_point_unverified: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for sensor attributes."""
@@ -81,6 +83,7 @@ class ParcelListItem:
             "open_code": self.open_code,
             "qr_code": self.qr_code,
             "stored_date": self.stored_date,
+            "pickup_point_unverified": self.pickup_point_unverified,
         }
 
 
@@ -287,7 +290,9 @@ class ApiParcel:
             status_desc=self.status_description,
         )
 
-    def to_parcel_list_item(self) -> "ParcelListItem":
+    def to_parcel_list_item(
+        self, *, pickup_point_unverified: bool = False
+    ) -> "ParcelListItem":
         """Convert to ParcelListItem for dashboard display."""
         # Build pickup point info
         pickup_name = None
@@ -342,6 +347,7 @@ class ApiParcel:
             open_code=self.open_code,
             qr_code=self.qr_code,
             stored_date=self.stored_date,
+            pickup_point_unverified=pickup_point_unverified,
         )
 
     @property

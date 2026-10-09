@@ -14,6 +14,7 @@ configured lockers.
 > * An account is now identified by its **full phone number, including the country prefix** (for example
 >   `+48123456789`), because the national number alone is not unique. An existing entry learns its full number from
 >   your InPost profile the first time it starts after the upgrade; nothing has to be entered again.
+>   The old automatic entry title is updated to that number too; manually chosen titles are kept.
 > * Entities are re-created under a new internal identity. Entity IDs follow the scheme documented
 >   [below](#entities) and now contain the full number: `sensor.inpost_123456789_...` becomes
 >   `sensor.inpost_48123456789_...`, the per-locker IDs become `sensor.inpost_48123456789_<locker>_...`, and the two
@@ -43,6 +44,8 @@ configured lockers.
 3. **Polling:** Home Assistant polls the InPost API every **30 seconds** (configurable) to retrieve the latest updates on your
    parcels. When a request fails, the interval doubles after each consecutive failure (up to one hour) and returns to
    the configured value after the first success. An HTTP 429 response is honoured, including its `Retry-After` delay.
+   If this happens during setup, early Home Assistant setup retries make no further API requests until that entry's
+   deadline expires. This waiting period is kept in memory until Home Assistant restarts and does not block other accounts.
 4. **Token refresh:** The access token is renewed automatically and the new tokens are saved, so they survive a
    restart. If InPost rejects the refresh token, a **re-authentication** request appears in *Settings → Devices &
    Services*; signing in again restores the existing entry with all its entities.
@@ -119,7 +122,16 @@ one of three groups. The group decides which sensors a parcel shows up in:
 | **Finished** | Delivered, returned to the sender, refused or cancelled. | only the all parcels count (and, for `DELIVERED`, the carbon footprint) |
 
 **Ready for pickup:** `READY_TO_PICKUP`, `PICKUP_REMINDER_SENT`, `READY_TO_PICKUP_FROM_POK`,
-`READY_TO_PICKUP_FROM_POK_REGISTERED`, `COURIER_AVIZO_IN_CUSTOMER_SERVICE_POINT`.
+`READY_TO_PICKUP_FROM_POK_REGISTERED`, `COURIER_AVIZO_IN_CUSTOMER_SERVICE_POINT`,
+`STACK_IN_BOX_MACHINE`, `STACK_IN_CUSTOMER_SERVICE_POINT`.
+
+The two temporary-storage statuses mean the parcel can be collected at a temporary location. They count as ready
+**at account level only**, appear in `ready_for_pickup`, and keep their pickup code and QR. They do not contribute
+to either count or binary sensor of any monitored locker. We have not confirmed whether `pickUpPoint.name` in
+these responses always identifies the actual temporary location rather than the original destination. The list
+therefore marks them with `pickup_point_unverified: true`; its point fields are reported API metadata, not a
+confirmed pickup address. Check InPost Mobile/SMS for the current location. Ordinary ready parcels still update
+their locker's sensors. Expired temporary storage and the return journey remain en route.
 
 **En route:**
 
@@ -129,7 +141,7 @@ one of three groups. The group decides which sensors a parcel shows up in:
 | On its way | `DISPATCHED_BY_SENDER`, `DISPATCHED_BY_SENDER_TO_POK`, `COLLECTED_FROM_SENDER`, `TAKEN_BY_COURIER`, `TAKEN_BY_COURIER_FROM_POK`, `ADOPTED_AT_SOURCE_BRANCH`, `SENT_FROM_SOURCE_BRANCH`, `ADOPTED_AT_SORTING_CENTER`, `SENT_FROM_SORTING_CENTER`, `ADOPTED_AT_TARGET_BRANCH`, `OUT_FOR_DELIVERY`, `OUT_FOR_DELIVERY_TO_ADDRESS` |
 | Delayed, re-routed or awaiting another attempt | `PICKUP_REMINDER_SENT_ADDRESS`, `DELAY_IN_DELIVERY`, `REDIRECT_TO_BOX`, `CANCELED_REDIRECT_TO_BOX`, `READDRESSED`, `OVERSIZED`, `UNDELIVERED_WRONG_ADDRESS`, `UNDELIVERED_INCOMPLETE_ADDRESS`, `UNDELIVERED_UNKNOWN_RECEIVER`, `UNDELIVERED_COD_CASH_RECEIVER`, `UNDELIVERED_NO_MAILBOX`, `UNDELIVERED_NOT_LIVE_ADDRESS`, `AVIZO` |
 | Not collected in time, outcome still open | `PICKUP_TIME_EXPIRED`, `READY_TO_PICKUP_FROM_BRANCH` |
-| Stored elsewhere until the chosen locker has room | `STACK_IN_BOX_MACHINE`, `STACK_PARCEL_IN_BOX_MACHINE_PICKUP_TIME_EXPIRED`, `UNSTACK_FROM_BOX_MACHINE`, `STACK_IN_CUSTOMER_SERVICE_POINT`, `STACK_PARCEL_PICKUP_TIME_EXPIRED`, `UNSTACK_FROM_CUSTOMER_SERVICE_POINT` |
+| Temporary storage expired or returning to the chosen locker | `STACK_PARCEL_IN_BOX_MACHINE_PICKUP_TIME_EXPIRED`, `UNSTACK_FROM_BOX_MACHINE`, `STACK_PARCEL_PICKUP_TIME_EXPIRED`, `UNSTACK_FROM_CUSTOMER_SERVICE_POINT` |
 
 **Finished:** `DELIVERED`, `RETURN_PICKUP_CONFIRMATION_TO_SENDER`, `CLAIMED`, `REJECTED_BY_RECEIVER`,
 `RETURNED_TO_SENDER`, `TAKEN_BY_COURIER_FROM_CUSTOMER_SERVICE_POINT`, `UNDELIVERED`,
@@ -209,9 +221,13 @@ content: |
   ---
   **{{ p.sender_name or 'Unknown sender' }}** {% if p.parcel_size %}({{ p.parcel_size }}){% endif %}
 
+  {% if p.pickup_point_unverified | default(false) %}
+  📍 **Temporary pickup location — check InPost Mobile/SMS**
+  {{ p.status_description }}
+  {% else %}
   📍 **{{ p.pickup_point_name or 'Courier' }}** {% if p.pickup_point_description %}- {{ p.pickup_point_description }}{% endif %}
-
   {% if p.pickup_point_address %}{{ p.pickup_point_address }}{% endif %}
+  {% endif %}
 
   {% if p.phone_number %}📱 Phone: **{{ p.phone_number }}**{% endif %}
 
@@ -252,7 +268,7 @@ content: |
   {% for p in ready %}
   ---
   ## 🟢 {{ p.sender_name or 'Unknown' }}
-  📍 {{ p.pickup_point_name }} | 🔑 **{{ p.open_code }}**
+  📍 {% if p.pickup_point_unverified | default(false) %}Temporary pickup location — check InPost Mobile/SMS{% else %}{{ p.pickup_point_name }}{% endif %} | 🔑 **{{ p.open_code }}**
   {% endfor %}
 
   {% for p in en_route %}

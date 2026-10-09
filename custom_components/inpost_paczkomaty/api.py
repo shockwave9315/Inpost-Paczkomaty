@@ -543,16 +543,24 @@ class InPostApiClient:
         en_route_list: List[ParcelListItem] = []
 
         def add(
-            group: Dict[str, Locker], listed: List[ParcelListItem], parcel: ApiParcel
+            group: Dict[str, Locker],
+            listed: List[ParcelListItem],
+            parcel: ApiParcel,
+            *,
+            assign_to_locker: bool,
         ) -> None:
-            """File a parcel under its locker and in the dashboard list."""
+            """Always list the parcel; group it only when its point is usable."""
+            listed.append(
+                parcel.to_parcel_list_item(pickup_point_unverified=not assign_to_locker)
+            )
+            if not assign_to_locker:
+                return
             locker_id = parcel.locker_id or "COURIER"
             locker = group.setdefault(
                 locker_id, Locker(locker_id=locker_id, count=0, parcels=[])
             )
             locker.parcels.append(parcel.to_parcel_item())
             locker.count += 1
-            listed.append(parcel.to_parcel_list_item())
 
         # Carbon footprint tracking
         daily_co2: Dict[str, Dict[str, float]] = {}  # {date: {co2, count}}
@@ -565,14 +573,25 @@ class InPostApiClient:
                 continue
 
             all_count += 1
-            state = classify_parcel(parcel)
+            classification = classify_parcel(parcel)
+            state = classification.state
 
             if state is ParcelState.READY:
-                add(ready_for_pickup, ready_for_pickup_list, parcel)
+                add(
+                    ready_for_pickup,
+                    ready_for_pickup_list,
+                    parcel,
+                    assign_to_locker=classification.assign_to_locker,
+                )
             elif state is ParcelState.EN_ROUTE:
                 # The user may leave some en route statuses out of the counts
                 if parcel.status not in self._ignored_en_route_statuses:
-                    add(en_route, en_route_list, parcel)
+                    add(
+                        en_route,
+                        en_route_list,
+                        parcel,
+                        assign_to_locker=classification.assign_to_locker,
+                    )
             elif state is ParcelState.UNKNOWN:
                 unknown_statuses.append(parcel.status)
 

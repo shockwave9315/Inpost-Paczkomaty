@@ -20,6 +20,10 @@ detection, re-authentication, the entry title, device names) reads
 from __future__ import annotations
 
 import re
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from homeassistant.config_entries import ConfigEntry
 
 
 def build_account_id(prefix: str | None, number: str | None) -> str | None:
@@ -46,3 +50,12 @@ def is_account_id(unique_id: str | None) -> bool:
     alone; neither says which account the entry belongs to.
     """
     return bool(unique_id) and unique_id.startswith("+")
+
+
+def identified_entry_title(entry: ConfigEntry, account_id: str) -> str:
+    """Replace only the exact automatic title of an unidentified legacy entry."""
+    if not is_account_id(entry.unique_id):
+        national_number = entry.data.get("phone_number") or entry.unique_id
+        if national_number and entry.title == f"InPost: +48 {national_number}":
+            return f"InPost: {account_id}"
+    return entry.title

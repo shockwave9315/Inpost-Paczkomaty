@@ -25,6 +25,8 @@ CONF_LOCKERS = "lockers"
 MAX_BACKOFF_SECONDS = 3600
 # Upper bound for a server-provided Retry-After value
 MAX_RETRY_AFTER_SECONDS = 86400
+# Monotonic API deadlines that survive replacement of a failed setup coordinator.
+DATA_SETUP_RATE_LIMITS = f"{DOMAIN}_setup_rate_limits"
 
 # Parcel lockers list handling in config/options flow
 DATA_LOCKERS_CACHE = f"{DOMAIN}_lockers_cache"

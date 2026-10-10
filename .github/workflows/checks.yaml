@@ -33,6 +33,15 @@ jobs:
       - name: Check project formatting
         run: uv run ruff format --check
 
+      # Home Assistant installs integration requirements under its own
+      # package_constraints.txt; a conflicting pin makes the integration
+      # impossible to load (e.g. python-slugify==8.0.4 vs ==9.1.2).
+      - name: Resolve manifest requirements against Home Assistant constraints
+        run: |
+          constraints="$(uv run python -c 'from importlib import resources; print(resources.files("homeassistant") / "package_constraints.txt")')"
+          jq -r '.requirements[]' custom_components/inpost_paczkomaty/manifest.json > manifest-requirements.txt
+          uv pip install --dry-run -c "$constraints" -r manifest-requirements.txt
+
 
   tests:
     runs-on: ubuntu-latest

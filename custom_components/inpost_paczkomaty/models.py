@@ -2,17 +2,11 @@
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
+from .account import build_account_id
 from .exceptions import parse_api_error
-
-
-@dataclass
-class HaInstance:
-    """Home Assistant instance configuration."""
-
-    ha_id: str
-    secret: str
+from .parcel_status import describe_status
 
 
 @dataclass
@@ -59,12 +53,14 @@ class ParcelListItem:
     pickup_point_building: Optional[str]
     pickup_point_post_code: Optional[str]
 
-    # Codes for pickup (only for READY_TO_PICKUP)
+    # Codes for pickup
     open_code: Optional[str]
     qr_code: Optional[str]
 
     # Dates
     stored_date: Optional[str]  # ISO date string
+    # The reported point must not be presented as a confirmed pickup location.
+    pickup_point_unverified: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for sensor attributes."""
@@ -87,6 +83,7 @@ class ParcelListItem:
             "open_code": self.open_code,
             "qr_code": self.qr_code,
             "stored_date": self.stored_date,
+            "pickup_point_unverified": self.pickup_point_unverified,
         }
 
 
@@ -103,6 +100,14 @@ class ParcelsSummary:
     # Lists for dashboard display
     ready_for_pickup_list: List["ParcelListItem"] = field(default_factory=list)
     en_route_list: List["ParcelListItem"] = field(default_factory=list)
+    # Parcels returned by the API that could not be interpreted and were skipped
+    invalid_parcels_count: int = 0
+    # Parcels in a status the integration does not know (see parcel_status.py):
+    # part of all_count, but neither ready for pickup nor en route
+    unknown_count: int = 0
+    unknown_statuses: List[str] = field(default_factory=list)
+    # True when the API reported more parcels than it returned in this response
+    has_more: bool = False
 
 
 @dataclass
@@ -181,14 +186,14 @@ class ApiAddressDetails:
 class ApiPickUpPoint:
     """Pickup point details from InPost API."""
 
-    name: str
+    name: Optional[str] = None
     location: Optional[ApiLocation] = None
     location_description: Optional[str] = None
     opening_hours: Optional[str] = None
     address_details: Optional[ApiAddressDetails] = None
     image_url: Optional[str] = None
     point_type: Optional[str] = None
-    easy_access_zone: bool = False
+    easy_access_zone: Optional[bool] = False
     type: Optional[List[str]] = None  # e.g., ["parcel_locker"]
 
     @property
@@ -203,10 +208,11 @@ class ApiPickUpPoint:
 class ApiCarbonFootprint:
     """Carbon footprint data from InPost API."""
 
-    box_machine_delivery: Optional[str] = None  # CO2 in kg for locker delivery
-    address_delivery: Optional[str] = None  # CO2 in kg for courier delivery
-    change_delivery_type_percent: Optional[str] = None
-    change_delivery_type_value: Optional[str] = None
+    # CO2 in kg; the API sends strings, numbers are accepted defensively
+    box_machine_delivery: Union[str, float, int, None] = None  # locker delivery
+    address_delivery: Union[str, float, int, None] = None  # courier delivery
+    change_delivery_type_percent: Union[str, float, int, None] = None
+    change_delivery_type_value: Union[str, float, int, None] = None
     redirection_url: Optional[str] = None
 
 
@@ -272,18 +278,7 @@ class ApiParcel:
     @property
     def status_description(self) -> str:
         """Get human-readable status description."""
-        status_map = {
-            "READY_TO_PICKUP": "Gotowa do odbioru",
-            "DELIVERED": "Doręczona",
-            "OUT_FOR_DELIVERY": "Wydana do doręczenia",
-            "ADOPTED_AT_SOURCE_BRANCH": "Przyjęta w Centrum Logistycznym",
-            "SENT_FROM_SOURCE_BRANCH": "W trasie",
-            "TAKEN_BY_COURIER": "Odebrana przez Kuriera",
-            "CONFIRMED": "Przesyłka utworzona",
-            "DISPATCHED_BY_SENDER": "Nadana",
-            "PICKUP_REMINDER_SENT": "Przypomnienie o odbiorze",
-        }
-        return status_map.get(self.status, self.status)
+        return describe_status(self.status)
 
     def to_parcel_item(self) -> "ParcelItem":
         """Convert to ParcelItem for ParcelsSummary."""
@@ -295,7 +290,9 @@ class ApiParcel:
             status_desc=self.status_description,
         )
 
-    def to_parcel_list_item(self) -> "ParcelListItem":
+    def to_parcel_list_item(
+        self, *, pickup_point_unverified: bool = False
+    ) -> "ParcelListItem":
         """Convert to ParcelListItem for dashboard display."""
         # Build pickup point info
         pickup_name = None
@@ -350,6 +347,7 @@ class ApiParcel:
             open_code=self.open_code,
             qr_code=self.qr_code,
             stored_date=self.stored_date,
+            pickup_point_unverified=pickup_point_unverified,
         )
 
     @property
@@ -371,12 +369,12 @@ class ApiParcel:
         else:
             value = self.carbon_footprint.address_delivery
 
-        if value:
-            try:
-                return float(value)
-            except (ValueError, TypeError):
-                return None
-        return None
+        if value is None or value == "" or isinstance(value, bool):
+            return None
+        try:
+            return float(value)
+        except ValueError, TypeError:
+            return None
 
     @property
     def pick_up_date_parsed(self) -> Optional[datetime]:
@@ -391,7 +389,7 @@ class ApiParcel:
             # Handle ISO format with Z suffix
             date_str = self.pick_up_date.replace("Z", "+00:00")
             return datetime.fromisoformat(date_str)
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             return None
 
 
@@ -425,19 +423,6 @@ class CarbonFootprintStats:
     def total_co2_grams(self) -> float:
         """Get total CO2 in grams."""
         return self.total_co2_kg * 1000
-
-
-# Status constants for parcel filtering
-EN_ROUTE_STATUSES = frozenset(
-    {
-        "OUT_FOR_DELIVERY",
-        "ADOPTED_AT_SOURCE_BRANCH",
-        "SENT_FROM_SOURCE_BRANCH",
-        "TAKEN_BY_COURIER",
-        "CONFIRMED",
-        "DISPATCHED_BY_SENDER",
-    }
-)
 
 
 # =============================================================================
@@ -533,6 +518,19 @@ class UserProfile:
     delivery: Optional[ProfileDelivery] = None
     shopping_active: bool = False
 
+    @property
+    def account_id(self) -> Optional[str]:
+        """Return the ID of the account this profile belongs to.
+
+        None if the profile lacks the phone number or its country prefix
+        (see ``account.py``).
+        """
+        if not self.personal:
+            return None
+        return build_account_id(
+            self.personal.phone_number_prefix, self.personal.phone_number
+        )
+
     def get_favorite_locker_codes(self) -> List[str]:
         """Get list of favorite/active locker codes.
 
@@ -592,33 +590,3 @@ class AuthTokens:
     expires_in: int = 7199
     scope: str = "openid"
     id_token: Optional[str] = None
-
-
-@dataclass
-class AuthStep:
-    """Authentication step status container."""
-
-    step: str
-    raw_response: dict = field(default_factory=dict)
-
-    @property
-    def is_onboarded(self) -> bool:
-        """Check if user has completed onboarding."""
-        return self.step == "ONBOARDED"
-
-    @property
-    def requires_phone(self) -> bool:
-        """Check if phone number input is required."""
-        return self.step == "PROVIDE_PHONE_NUMBER_FOR_LOGIN"
-
-    @property
-    def requires_otp(self) -> bool:
-        """Check if OTP code input is required."""
-        return self.step == "PROVIDE_PHONE_CODE"
-
-    @property
-    def requires_email(self) -> tuple[bool, Optional[str]]:
-        """Check if email confirmation is required and return hashed email."""
-        if self.step == "PROVIDE_EXISTING_EMAIL_ADDRESS":
-            return True, self.raw_response.get("hashedEmail", "")
-        return False, None

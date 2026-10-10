@@ -10,3 +10,6 @@ __pycache__/
 coverage.xml
 report.json
 .DS_Store
+manifest-requirements.txt
+.pytest_cache/
+.ruff_cache/

@@ -78,7 +78,7 @@ class InPostApiError(Exception):
                 detail_parsed = json.loads(detail)
                 if isinstance(detail_parsed, dict):
                     detail_type = detail_parsed.get("type")
-            except (json.JSONDecodeError, TypeError):
+            except json.JSONDecodeError, TypeError:
                 pass
 
         # Build human-readable message
@@ -180,6 +180,12 @@ class RateLimitError(InPostApiError):
     pass
 
 
+class RequestTimeoutError(InPostApiError):
+    """Raised when a request does not complete within the timeout."""
+
+    pass
+
+
 class ServerError(InPostApiError):
     """Raised when server encounters an error."""
 
@@ -192,10 +198,30 @@ class ApiClientError(Exception):
     pass
 
 
+class ApiAuthError(ApiClientError):
+    """Raised when InPost permanently rejects the stored credentials."""
+
+    pass
+
+
+class ApiResponseError(ApiClientError):
+    """Raised when the API returns a payload that cannot be interpreted."""
+
+    pass
+
+
 class RateLimitedError(ApiClientError):
     """Raised when API returns HTTP 429 (rate limited)."""
 
-    pass
+    def __init__(self, message: str, retry_after: Optional[float] = None) -> None:
+        """Initialize the error.
+
+        Args:
+            message: Human-readable error message.
+            retry_after: Seconds the server asked us to wait, if provided.
+        """
+        super().__init__(message)
+        self.retry_after = retry_after
 
 
 # Mapping of detail types to specific exception classes

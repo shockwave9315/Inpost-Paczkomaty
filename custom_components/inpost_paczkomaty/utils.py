@@ -2,8 +2,81 @@ import base64
 import json
 import re
 import time
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from math import asin, cos, radians, sin, sqrt
-from typing import Any, Optional
+from typing import Any, Mapping, Optional
+
+REDACTED = "**REDACTED**"
+SENSITIVE_HEADERS = frozenset(
+    {"authorization", "proxy-authorization", "cookie", "set-cookie", "x-xsrf-token"}
+)
+
+
+def redact_headers(headers: Mapping[str, Any]) -> dict:
+    """Return a copy of HTTP headers that is safe to write to logs.
+
+    Args:
+        headers: Request or response headers.
+
+    Returns:
+        Headers with credential-bearing values replaced by a placeholder.
+    """
+    return {
+        key: REDACTED if str(key).lower() in SENSITIVE_HEADERS else value
+        for key, value in headers.items()
+    }
+
+
+def get_header(headers: Optional[Mapping[str, Any]], name: str) -> Optional[str]:
+    """Look up an HTTP header ignoring the case of its name."""
+    if not headers:
+        return None
+    wanted = name.lower()
+    for key, value in headers.items():
+        if str(key).lower() == wanted:
+            return value
+    return None
+
+
+def parse_retry_after(value: Optional[str]) -> Optional[float]:
+    """Parse a Retry-After header (delta seconds or HTTP date).
+
+    Args:
+        value: Raw header value.
+
+    Returns:
+        Non-negative number of seconds to wait, or None if absent/invalid.
+    """
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return max(0.0, float(text))
+    except ValueError:
+        pass
+    try:
+        when = parsedate_to_datetime(text)
+    except TypeError, ValueError:
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return max(0.0, (when - datetime.now(timezone.utc)).total_seconds())
+
+
+def drop_nulls(data: Any) -> Any:
+    """Recursively remove dictionary keys whose value is null.
+
+    The InPost API sends explicit nulls for fields that are simply absent in
+    other responses; dropping them lets model defaults apply to both forms.
+    """
+    if isinstance(data, dict):
+        return {k: drop_nulls(v) for k, v in data.items() if v is not None}
+    if isinstance(data, list):
+        return [drop_nulls(item) for item in data]
+    return data
 
 
 def decode_jwt_payload(token: str) -> Optional[dict]:
@@ -30,7 +103,7 @@ def decode_jwt_payload(token: str) -> Optional[dict]:
 
         payload_bytes = base64.urlsafe_b64decode(payload_b64)
         return json.loads(payload_bytes.decode("utf-8"))
-    except (ValueError, json.JSONDecodeError, UnicodeDecodeError):
+    except ValueError, json.JSONDecodeError, UnicodeDecodeError:
         return None
 
 

@@ -1,5 +1,7 @@
-import logging
-from datetime import datetime
+"""Sensors for InPost Paczkomaty."""
+
+from __future__ import annotations
+
 from typing import Any
 
 from homeassistant.components.sensor import (
@@ -7,177 +9,147 @@ from homeassistant.components.sensor import (
     SensorEntity,
     SensorStateClass,
 )
-from homeassistant.const import UnitOfMass
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import EntityCategory, UnitOfMass
+from homeassistant.core import HomeAssistant
+from homeassistant.util import dt as dt_util
 
-from .const import DOMAIN, ENTRY_PHONE_NUMBER_CONFIG
+from .coordinator import InpostDataCoordinator
+from .entity import (
+    InPostAccountEntity,
+    InPostLockerEntity,
+    InPostLockerEntityMixin,
+    get_tracked_lockers,
+)
 
-_LOGGER = logging.getLogger(__name__)
 
+async def async_setup_entry(
+    hass: HomeAssistant, entry: ConfigEntry, async_add_entities
+) -> None:
+    """Set up account sensors and sensors for every tracked parcel locker."""
+    coordinator: InpostDataCoordinator = entry.runtime_data
 
-async def async_setup_entry(hass, entry, async_add_entities):
-    tracked_lockers = entry.options.get("lockers", [])
-    phone_number = entry.data.get(ENTRY_PHONE_NUMBER_CONFIG)
+    entities: list[SensorEntity] = [
+        # Global sensors
+        AllParcelsCount(coordinator, entry),
+        EnRouteParcelsCount(coordinator, entry),
+        ReadyForPickupParcelsCount(coordinator, entry),
+        # Parcels list sensor for dashboard markdown card
+        ParcelsListSensor(coordinator, entry),
+        # Carbon footprint sensors
+        TotalCarbonFootprintSensor(coordinator, entry),
+        TodayCarbonFootprintSensor(coordinator, entry),
+        CarbonFootprintStatisticsSensor(coordinator, entry),
+    ]
 
-    coordinator = entry.runtime_data
-
-    _LOGGER.debug("Creating sensors for lockers %s", tracked_lockers)
-
-    # Make sure coordinator has fetched first update
-    await coordinator.async_config_entry_first_refresh()
-
-    # Parse lockers - handle both old format (list of codes) and new format (list of dicts)
-    # Build a lookup map: code -> locker data
-    lockers_map: dict[str, dict] = {}
-    if tracked_lockers:
-        if isinstance(tracked_lockers[0], dict):
-            # New format: [{"code": "GDA117M", "description": "...", ...}]
-            lockers_map = {locker["code"]: locker for locker in tracked_lockers}
-        else:
-            # Old format: ["GDA117M"] - backwards compatibility
-            lockers_map = {code: {"code": code} for code in tracked_lockers}
-
-    entities = []
-
-    # Global sensors
-    entities.append(AllParcelsCount(coordinator, phone_number))
-    entities.append(EnRouteParcelsCount(coordinator, phone_number))
-    entities.append(ReadyForPickupParcelsCount(coordinator, phone_number))
-
-    # Parcels list sensors for dashboard markdown card
-    entities.append(ParcelsListSensor(coordinator, phone_number))
-
-    # Carbon footprint sensors
-    entities.append(TotalCarbonFootprintSensor(coordinator, phone_number))
-    entities.append(TodayCarbonFootprintSensor(coordinator, phone_number))
-    entities.append(CarbonFootprintStatisticsSensor(coordinator, phone_number))
-
-    for locker_id, locker_data in lockers_map.items():
-        # Per locker sensor
+    for locker_id, locker_data in get_tracked_lockers(entry).items():
         entities.append(
-            ParcelLockerNumericSensor(
-                coordinator,
-                phone_number,
-                locker_id,
-                "en_route_count",
-                lambda data, locker_id: (
-                    getattr(data.en_route.get(locker_id), "count", 0)
-                    if data.en_route.get(locker_id) is not None
-                    else 0
-                ),
+            ParcelLockerCountSensor(
+                coordinator, entry, locker_id, "en_route", "En route count"
             )
         )
         entities.append(
-            ParcelLockerNumericSensor(
+            ParcelLockerCountSensor(
                 coordinator,
-                phone_number,
+                entry,
                 locker_id,
-                "ready_for_pickup_count",
-                lambda data, locker_id: (
-                    getattr(data.ready_for_pickup.get(locker_id), "count", 0)
-                    if data.ready_for_pickup.get(locker_id) is not None
-                    else 0
-                ),
+                "ready_for_pickup",
+                "Ready for pickup count",
             )
         )
         entities.append(
-            ParcelLockerIdSensor(
-                coordinator,
-                phone_number,
-                locker_id,
-                "locker_id",
-                lambda data, locker_id: locker_id,
+            ParcelLockerStaticSensor(
+                entry, locker_id, "locker_id", "Locker ID", locker_id
             )
         )
         entities.append(
-            ParcelLockerDescriptionSensor(
-                coordinator,
-                phone_number,
+            ParcelLockerStaticSensor(
+                entry,
                 locker_id,
                 "description",
-                description=locker_data.get("description", ""),
+                "Description",
+                locker_data.get("description") or None,
             )
         )
         entities.append(
-            ParcelLockerAddressSensor(
-                coordinator,
-                phone_number,
+            ParcelLockerStaticSensor(
+                entry,
                 locker_id,
                 "address",
-                city=locker_data.get("city", ""),
-                street=locker_data.get("street", ""),
-                building=locker_data.get("building", ""),
-                zip_code=locker_data.get("zip_code", ""),
+                "Address",
+                format_locker_address(locker_data),
             )
         )
+
     async_add_entities(entities)
 
 
-class AllParcelsCount(CoordinatorEntity, SensorEntity):
-    """Sensor not bound to any device."""
+def format_locker_address(locker_data: dict[str, Any]) -> str | None:
+    """Return "city, zip code, street building" from the parts that are known.
 
-    def __init__(self, coordinator, phone_number):
-        super().__init__(coordinator)
-        self._phone_number = phone_number
-        self._attr_name = f"InPost {self._phone_number} all parcels count"
+    A locker added by typing its code has no address data at all; the result
+    is then None (the sensor is "unknown") rather than bare separators.
+    """
+    street = " ".join(
+        part
+        for part in (locker_data.get("street"), locker_data.get("building"))
+        if part
+    )
+    parts = (locker_data.get("city"), locker_data.get("zip_code"), street)
+    return ", ".join(part for part in parts if part) or None
+
+
+# =============================================================================
+# Account sensors
+# =============================================================================
+
+
+class AllParcelsCount(InPostAccountEntity, SensorEntity):
+    """Number of all tracked parcels of the account."""
+
+    _attr_name = "All parcels count"
+
+    def __init__(self, coordinator: InpostDataCoordinator, entry: ConfigEntry) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator, entry, "total_count")
 
     @property
-    def unique_id(self):
-        return f"{DOMAIN}_{self._phone_number}_total_count"
-
-    @property
-    def device_info(self):
-        # No device to place it under the integration only
-        return None
-
-    @property
-    def native_value(self):
+    def native_value(self) -> int:
+        """Return the number of tracked parcels."""
         return self.coordinator.data.all_count
 
 
-class EnRouteParcelsCount(CoordinatorEntity, SensorEntity):
-    """Sensor not bound to any device."""
+class EnRouteParcelsCount(InPostAccountEntity, SensorEntity):
+    """Number of parcels en route to any destination."""
 
-    def __init__(self, coordinator, phone_number):
-        super().__init__(coordinator)
-        self._phone_number = phone_number
-        self._attr_name = f"InPost {self._phone_number} en route parcels count"
+    _attr_name = "En route parcels count"
 
-    @property
-    def unique_id(self):
-        return f"{DOMAIN}_{self._phone_number}_en_route_count"
+    def __init__(self, coordinator: InpostDataCoordinator, entry: ConfigEntry) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator, entry, "en_route_count")
 
     @property
-    def device_info(self):
-        return None
-
-    @property
-    def native_value(self):
+    def native_value(self) -> int:
+        """Return the number of parcels en route."""
         return self.coordinator.data.en_route_count
 
 
-class ReadyForPickupParcelsCount(CoordinatorEntity, SensorEntity):
-    """Sensor not bound to any device."""
+class ReadyForPickupParcelsCount(InPostAccountEntity, SensorEntity):
+    """Number of parcels ready for pickup at any destination."""
 
-    def __init__(self, coordinator, phone_number):
-        super().__init__(coordinator)
-        self._phone_number = phone_number
-        self._attr_name = f"InPost {self._phone_number} ready for pickup parcels count"
+    _attr_name = "Ready for pickup parcels count"
 
-    @property
-    def unique_id(self):
-        return f"{DOMAIN}_{self._phone_number}_ready_for_pickup_count"
+    def __init__(self, coordinator: InpostDataCoordinator, entry: ConfigEntry) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator, entry, "ready_for_pickup_count")
 
     @property
-    def device_info(self):
-        return None
-
-    @property
-    def native_value(self):
+    def native_value(self) -> int:
+        """Return the number of parcels ready for pickup."""
         return self.coordinator.data.ready_for_pickup_count
 
 
-class ParcelsListSensor(CoordinatorEntity, SensorEntity):
+class ParcelsListSensor(InPostAccountEntity, SensorEntity):
     """Sensor with parcels list for dashboard markdown card display.
 
     This sensor provides lists of en_route and ready_for_pickup parcels
@@ -185,23 +157,16 @@ class ParcelsListSensor(CoordinatorEntity, SensorEntity):
     generation via JavaScript.
     """
 
+    _attr_name = "Parcels list"
     _attr_icon = "mdi:package-variant"
+    # The lists are unbounded and carry pickup codes / QR payloads: keep them
+    # in the live state for dashboards, but out of the recorder database
+    # (which also rejects attribute sets above 16 kB).
+    _unrecorded_attributes = frozenset({"ready_for_pickup", "en_route"})
 
-    def __init__(self, coordinator, phone_number):
+    def __init__(self, coordinator: InpostDataCoordinator, entry: ConfigEntry) -> None:
         """Initialize the parcels list sensor."""
-        super().__init__(coordinator)
-        self._phone_number = phone_number
-        self._attr_name = f"InPost {self._phone_number} parcels list"
-
-    @property
-    def unique_id(self):
-        """Return unique ID for this sensor."""
-        return f"{DOMAIN}_{self._phone_number}_parcels_list"
-
-    @property
-    def device_info(self):
-        """Return device info."""
-        return None
+        super().__init__(coordinator, entry, "parcels_list")
 
     @property
     def native_value(self) -> int:
@@ -218,110 +183,81 @@ class ParcelsListSensor(CoordinatorEntity, SensorEntity):
         - en_route: List of parcels in transit
         - ready_for_pickup_count: Count of parcels ready for pickup
         - en_route_count: Count of parcels en route
+        - invalid_parcels_count: Parcels skipped because the API returned
+          them in an unexpected format
+        - unknown_parcels_count: Parcels in a status the integration does not
+          know; they are in neither list
+        - unknown_statuses: The statuses of those parcels
+        - has_more: True if the API reported more parcels than it returned
         """
         data = self.coordinator.data
 
-        # Convert ParcelListItem objects to dicts
-        ready_for_pickup = [parcel.to_dict() for parcel in data.ready_for_pickup_list]
-        en_route = [parcel.to_dict() for parcel in data.en_route_list]
-
         return {
-            "ready_for_pickup": ready_for_pickup,
-            "en_route": en_route,
+            "ready_for_pickup": [p.to_dict() for p in data.ready_for_pickup_list],
+            "en_route": [p.to_dict() for p in data.en_route_list],
             "ready_for_pickup_count": data.ready_for_pickup_count,
             "en_route_count": data.en_route_count,
+            "invalid_parcels_count": data.invalid_parcels_count,
+            "unknown_parcels_count": data.unknown_count,
+            "unknown_statuses": data.unknown_statuses,
+            "has_more": data.has_more,
         }
 
 
-class ParcelLockerDeviceSensor(CoordinatorEntity):
-    """Base class for all parcel locker sensors."""
-
-    def __init__(self, coordinator, phone_number, locker_id, key, _value_fn=None):
-        super().__init__(coordinator)
-        self._phone_number = phone_number
-        self._locker_id = locker_id
-        self._key = key
-        self._value_fn = _value_fn
-
-    @property
-    def device_info(self):
-        return {
-            "identifiers": {(DOMAIN, self._locker_id)},
-            "name": f"Paczkomat {self._locker_id}",
-            "manufacturer": "InPost",
-        }
-
-    @property
-    def unique_id(self):
-        return f"{DOMAIN}_{self._phone_number}_{self._locker_id}_{self._key}"
-
-    @property
-    def name(self):
-        return f"InPost {self._phone_number} {self._locker_id} {self._key.replace('_', ' ').title()}"
-
-    @property
-    def _sensor_data(self):
-        """Return the latest value from coordinator data for this locker."""
-
-        data = self.coordinator.data
-
-        if self._value_fn is not None:
-            try:
-                return self._value_fn(data, self._locker_id)
-            except Exception as e:
-                _LOGGER.error("Custom value_fn failed for %s: %s", self.unique_id, e)
-                return None
-
-        return None
+# =============================================================================
+# Parcel locker sensors
+# =============================================================================
 
 
-class ParcelLockerNumericSensor(ParcelLockerDeviceSensor, SensorEntity):
-    @property
-    def native_value(self):
-        return self._sensor_data or 0
-
-
-class ParcelLockerIdSensor(ParcelLockerDeviceSensor, SensorEntity):
-    @property
-    def native_value(self):
-        return str(self._locker_id)
-
-
-class ParcelLockerDescriptionSensor(ParcelLockerDeviceSensor, SensorEntity):
-    """Sensor for parcel locker description."""
-
-    def __init__(self, coordinator, phone_number, locker_id, key, description=""):
-        super().__init__(coordinator, phone_number, locker_id, key)
-        self._description = description
-
-    @property
-    def native_value(self):
-        return self._description
-
-
-class ParcelLockerAddressSensor(ParcelLockerDeviceSensor, SensorEntity):
-    """Sensor for parcel locker address."""
+class ParcelLockerCountSensor(InPostLockerEntity, SensorEntity):
+    """Number of parcels of one group assigned to a tracked locker."""
 
     def __init__(
         self,
-        coordinator,
-        phone_number,
-        locker_id,
-        key,
-        city="",
-        street="",
-        building="",
-        zip_code="",
-    ):
-        super().__init__(coordinator, phone_number, locker_id, key)
-        self._city = city
-        self._street = street
-        self._building = building
-        self._zip_code = zip_code
+        coordinator: InpostDataCoordinator,
+        entry: ConfigEntry,
+        locker_id: str,
+        group: str,
+        name: str,
+    ) -> None:
+        """Initialize the sensor.
+
+        Args:
+            coordinator: Data coordinator.
+            entry: Config entry of the account.
+            locker_id: Parcel locker code.
+            group: ParcelsSummary attribute to read (en_route/ready_for_pickup).
+            name: Entity name relative to the locker device.
+        """
+        super().__init__(coordinator, entry, locker_id, f"{group}_count")
+        self._group = group
+        self._attr_name = name
 
     @property
-    def native_value(self):
-        return f"{self._city}, {self._zip_code}, {self._street} {self._building}"
+    def native_value(self) -> int:
+        """Return the number of parcels of the group in this locker."""
+        locker = getattr(self.coordinator.data, self._group).get(self._locker_id)
+        return locker.count if locker is not None else 0
+
+
+class ParcelLockerStaticSensor(InPostLockerEntityMixin, SensorEntity):
+    """Fixed information about a tracked locker (code, description, address)."""
+
+    _attr_should_poll = False
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(
+        self,
+        entry: ConfigEntry,
+        locker_id: str,
+        key: str,
+        name: str,
+        value: str | None,
+    ) -> None:
+        """Initialize the sensor with its constant value (None if not known)."""
+        self._init_locker(entry, locker_id, key)
+        self._attr_name = name
+        self._attr_native_value = value
 
 
 # =============================================================================
@@ -329,29 +265,18 @@ class ParcelLockerAddressSensor(ParcelLockerDeviceSensor, SensorEntity):
 # =============================================================================
 
 
-class TotalCarbonFootprintSensor(CoordinatorEntity, SensorEntity):
+class TotalCarbonFootprintSensor(InPostAccountEntity, SensorEntity):
     """Sensor for total cumulative carbon footprint from delivered parcels."""
 
+    _attr_name = "Total carbon footprint"
     _attr_device_class = SensorDeviceClass.WEIGHT
     _attr_native_unit_of_measurement = UnitOfMass.KILOGRAMS
     _attr_state_class = SensorStateClass.TOTAL
     _attr_icon = "mdi:molecule-co2"
 
-    def __init__(self, coordinator, phone_number):
+    def __init__(self, coordinator: InpostDataCoordinator, entry: ConfigEntry) -> None:
         """Initialize the total carbon footprint sensor."""
-        super().__init__(coordinator)
-        self._phone_number = phone_number
-        self._attr_name = f"InPost {self._phone_number} total carbon footprint"
-
-    @property
-    def unique_id(self):
-        """Return unique ID for this sensor."""
-        return f"{DOMAIN}_{self._phone_number}_total_carbon_footprint"
-
-    @property
-    def device_info(self):
-        """Return device info."""
-        return None
+        super().__init__(coordinator, entry, "total_carbon_footprint")
 
     @property
     def native_value(self) -> float:
@@ -369,92 +294,64 @@ class TotalCarbonFootprintSensor(CoordinatorEntity, SensorEntity):
             return {
                 "total_parcels": stats.total_parcels,
                 "total_co2_grams": stats.total_co2_grams,
-                "unit_of_measurement": "kg CO₂",
             }
         return {}
 
 
-class TodayCarbonFootprintSensor(CoordinatorEntity, SensorEntity):
+class TodayCarbonFootprintSensor(InPostAccountEntity, SensorEntity):
     """Sensor for today's carbon footprint from delivered parcels."""
 
+    _attr_name = "Today carbon footprint"
     _attr_device_class = SensorDeviceClass.WEIGHT
     _attr_native_unit_of_measurement = UnitOfMass.KILOGRAMS
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_icon = "mdi:molecule-co2"
 
-    def __init__(self, coordinator, phone_number):
+    def __init__(self, coordinator: InpostDataCoordinator, entry: ConfigEntry) -> None:
         """Initialize today's carbon footprint sensor."""
-        super().__init__(coordinator)
-        self._phone_number = phone_number
-        self._attr_name = f"InPost {self._phone_number} today carbon footprint"
+        super().__init__(coordinator, entry, "today_carbon_footprint")
 
-    @property
-    def unique_id(self):
-        """Return unique ID for this sensor."""
-        return f"{DOMAIN}_{self._phone_number}_today_carbon_footprint"
-
-    @property
-    def device_info(self):
-        """Return device info."""
-        return None
+    def _today_entry(self):
+        """Return (today's date string, matching daily data or None)."""
+        # Same clock as the daily buckets: Home Assistant's local time zone.
+        today = dt_util.now().strftime("%Y-%m-%d")
+        stats = self.coordinator.data.carbon_footprint_stats
+        if stats:
+            for daily in stats.daily_data:
+                if daily.date == today:
+                    return today, daily
+        return today, None
 
     @property
     def native_value(self) -> float:
         """Return today's carbon footprint in kg."""
-        stats = self.coordinator.data.carbon_footprint_stats
-        if not stats or not stats.daily_data:
-            return 0.0
-
-        today = datetime.now().strftime("%Y-%m-%d")
-        for daily in stats.daily_data:
-            if daily.date == today:
-                return round(daily.value, 4)
-        return 0.0
+        _, daily = self._today_entry()
+        return round(daily.value, 4) if daily else 0.0
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return additional attributes."""
-        stats = self.coordinator.data.carbon_footprint_stats
-        if not stats or not stats.daily_data:
-            return {}
-
-        today = datetime.now().strftime("%Y-%m-%d")
-        for daily in stats.daily_data:
-            if daily.date == today:
-                return {
-                    "parcel_count": daily.parcel_count,
-                    "date": daily.date,
-                    "unit_of_measurement": "kg CO₂",
-                }
-        return {"parcel_count": 0, "date": today}
+        today, daily = self._today_entry()
+        return {"parcel_count": daily.parcel_count if daily else 0, "date": today}
 
 
-class CarbonFootprintStatisticsSensor(CoordinatorEntity, SensorEntity):
+class CarbonFootprintStatisticsSensor(InPostAccountEntity, SensorEntity):
     """Sensor with daily carbon footprint statistics for graph visualization.
 
     This sensor provides daily breakdown data as attributes that can be used
     with ApexCharts, mini-graph-card, or other visualization cards.
     """
 
+    _attr_name = "Carbon footprint statistics"
     _attr_icon = "mdi:chart-line"
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = UnitOfMass.KILOGRAMS
+    # Grow with every delivery day; available live, not stored in the recorder.
+    _unrecorded_attributes = frozenset({"daily_data", "cumulative_data"})
 
-    def __init__(self, coordinator, phone_number):
+    def __init__(self, coordinator: InpostDataCoordinator, entry: ConfigEntry) -> None:
         """Initialize the carbon footprint statistics sensor."""
-        super().__init__(coordinator)
-        self._phone_number = phone_number
-        self._attr_name = f"InPost {self._phone_number} carbon footprint statistics"
-
-    @property
-    def unique_id(self):
-        """Return unique ID for this sensor."""
-        return f"{DOMAIN}_{self._phone_number}_carbon_footprint_statistics"
-
-    @property
-    def device_info(self):
-        """Return device info."""
-        return None
+        super().__init__(coordinator, entry, "carbon_footprint_statistics")
 
     @property
     def native_value(self) -> float:
@@ -472,7 +369,7 @@ class CarbonFootprintStatisticsSensor(CoordinatorEntity, SensorEntity):
         - daily_data: List of {date, value, parcel_count} for daily graphs
         - cumulative_data: List of {date, value} for cumulative graphs
         - total_co2_kg: Total carbon footprint
-        - total_parcels: Total number of delivered parcels
+        - total_parcels: Total number of delivered parcels counted
         """
         stats = self.coordinator.data.carbon_footprint_stats
         if not stats:

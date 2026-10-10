@@ -30,9 +30,10 @@ class InpostAuth:
     InPost OAuth2 Authentication Handler.
 
     The user performs the interactive login (phone number, SMS code, captcha and
-    email confirmation) in an external browser window. The authenticated browser
-    session cookie is then injected here so we can mint an authorization code
-    server-side (using our own PKCE) and exchange it for access/refresh tokens.
+    email confirmation) in an external browser window. InPost then redirects the
+    browser to a callback URL carrying an authorization code, which the user
+    pastes back so it can be exchanged (with our PKCE verifier) for
+    access/refresh tokens.
     """
 
     # Use constants from const.py
@@ -50,7 +51,6 @@ class InpostAuth:
         )
         self._flow_state = self._generate_random_hex(8)
         self._code_verifier = self._generate_code_verifier()
-        _LOGGER.debug("InpostAuth initialized with flow state: %s", self._flow_state)
 
     @staticmethod
     def _generate_random_hex(length: int) -> str:
@@ -116,8 +116,8 @@ class InpostAuth:
 
         Opening this URL triggers InPost's own login flow (phone number, SMS
         code, captcha and email confirmation). After a successful login the
-        browser holds an authenticated ``SESSION`` cookie that can be pasted
-        back into Home Assistant.
+        browser is redirected to a callback URL whose address is pasted back
+        into Home Assistant.
 
         Returns:
             Fully-qualified OAuth2 authorize URL.
@@ -168,7 +168,7 @@ class InpostAuth:
 
     async def exchange_code_for_tokens(self, authorization_code: str) -> AuthTokens:
         """
-        Step 7: Exchange authorization code for access and refresh tokens.
+        Exchange authorization code for access and refresh tokens.
 
         Args:
             authorization_code: The OAuth2 authorization code.
@@ -180,7 +180,7 @@ class InpostAuth:
             InPostApiError: If token exchange fails with API error.
             ValueError: If token exchange fails for other reasons.
         """
-        _LOGGER.info("Exchanging authorization code for tokens")
+        _LOGGER.debug("Exchanging authorization code for tokens")
         url = f"{self.API_BASE_URL}/global/oauth2/token"
         response = await self._http_client.post(
             url=url,
@@ -196,11 +196,20 @@ class InpostAuth:
         # Check for API errors
         response.raise_for_error()
 
-        if not isinstance(response.body, dict) or "access_token" not in response.body:
-            _LOGGER.error("Token exchange failed: %s", response.body)
-            raise ValueError(f"Token exchange failed: {response.body}")
+        body = response.body
+        if (
+            not isinstance(body, dict)
+            or not body.get("access_token")
+            or not body.get("refresh_token")
+        ):
+            # Never log or raise the raw body: it may carry partial credentials.
+            reason = body.get("error") if isinstance(body, dict) else None
+            raise ValueError(
+                "Token exchange failed: "
+                f"{reason or 'response did not contain the expected tokens'}"
+            )
 
-        _LOGGER.info("Tokens obtained successfully")
+        _LOGGER.debug("Tokens obtained successfully")
         return AuthTokens(
             access_token=response.body["access_token"],
             refresh_token=response.body["refresh_token"],

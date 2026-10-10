@@ -9,7 +9,6 @@ from custom_components.inpost_paczkomaty.models import (
     ApiParcel,
     ApiPickUpPoint,
     ApiSender,
-    AuthStep,
     AuthTokens,
     CarbonFootprintStats,
     DailyCarbonFootprint,
@@ -139,71 +138,6 @@ class TestAuthTokens:
         assert tokens.expires_in == 3600
         assert tokens.scope == "custom_scope"
         assert tokens.id_token == "id_token_value"
-
-
-# =============================================================================
-# AuthStep Tests
-# =============================================================================
-
-
-class TestAuthStep:
-    """Tests for AuthStep dataclass."""
-
-    def test_init_with_defaults(self):
-        """Test initialization with defaults."""
-        step = AuthStep(step="TEST_STEP")
-
-        assert step.step == "TEST_STEP"
-        assert step.raw_response == {}
-
-    def test_is_onboarded_true(self):
-        """Test is_onboarded returns True for ONBOARDED step."""
-        step = AuthStep(step="ONBOARDED")
-        assert step.is_onboarded is True
-
-    def test_is_onboarded_false(self):
-        """Test is_onboarded returns False for other steps."""
-        step = AuthStep(step="PROVIDE_PHONE_NUMBER_FOR_LOGIN")
-        assert step.is_onboarded is False
-
-    def test_requires_phone_true(self):
-        """Test requires_phone returns True for PROVIDE_PHONE_NUMBER_FOR_LOGIN."""
-        step = AuthStep(step="PROVIDE_PHONE_NUMBER_FOR_LOGIN")
-        assert step.requires_phone is True
-
-    def test_requires_phone_false(self):
-        """Test requires_phone returns False for other steps."""
-        step = AuthStep(step="ONBOARDED")
-        assert step.requires_phone is False
-
-    def test_requires_otp_true(self):
-        """Test requires_otp returns True for PROVIDE_PHONE_CODE."""
-        step = AuthStep(step="PROVIDE_PHONE_CODE")
-        assert step.requires_otp is True
-
-    def test_requires_otp_false(self):
-        """Test requires_otp returns False for other steps."""
-        step = AuthStep(step="ONBOARDED")
-        assert step.requires_otp is False
-
-    def test_requires_email_true_with_hashed_email(self):
-        """Test requires_email returns tuple with True and hashed email."""
-        step = AuthStep(
-            step="PROVIDE_EXISTING_EMAIL_ADDRESS",
-            raw_response={"hashedEmail": "abc***@example.com"},
-        )
-
-        requires, hashed = step.requires_email
-        assert requires is True
-        assert hashed == "abc***@example.com"
-
-    def test_requires_email_false(self):
-        """Test requires_email returns tuple with False and None."""
-        step = AuthStep(step="ONBOARDED")
-
-        requires, hashed = step.requires_email
-        assert requires is False
-        assert hashed is None
 
 
 # =============================================================================

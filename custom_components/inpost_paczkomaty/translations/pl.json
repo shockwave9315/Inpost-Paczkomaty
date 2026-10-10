@@ -1,24 +1,58 @@
 {
   "config": {
     "abort": {
-      "token_exchange_failed": "Nie udało się zakończyć uwierzytelniania. Spróbuj ponownie."
+      "already_configured": "To konto InPost jest już skonfigurowane.",
+      "reauth_successful": "Ponowne uwierzytelnienie zakończone pomyślnie.",
+      "wrong_account": "Zalogowano na inne konto InPost niż to, które wymaga ponownego uwierzytelnienia."
     },
     "error": {
       "invalid_auth_response": "Nie udało się odczytać prawidłowego kodu autoryzacji. Upewnij się, że skopiowałeś pełny adres URL po zalogowaniu, i spróbuj ponownie.",
-      "rate_limited_error": "Zbyt wiele żądań. Spróbuj ponownie później.",
-      "cannot_fetch_lockers": "Nie udało się pobrać listy paczkomatów. Możesz kontynuować bez wybierania paczkomatów i skonfigurować je później w opcjach."
+      "cannot_fetch_lockers": "Nie udało się pobrać listy paczkomatów. Możesz wpisać kody paczkomatów ręcznie lub skonfigurować je później w opcjach.",
+      "unknown_locker": "Co najmniej jednego z podanych kodów nie ma na publicznej liście paczkomatów InPost (lista może być nieaktualna). Sprawdź, czy w kodach nie ma literówek; wyślij ponownie, aby dodać je mimo to.",
+      "auth_rejected": "InPost nie zaakceptował nowego logowania. Zaloguj się ponownie, korzystając z poniższego linku.",
+      "cannot_connect": "Nie udało się połączyć z InPost, aby dokończyć logowanie. Spróbuj ponownie za chwilę - ten sam adres przekierowania można wysłać jeszcze raz."
     },
     "step": {
       "user": {
         "title": "Logowanie InPost",
-        "description": "1. Otwórz [stronę logowania InPost]({login_url}) w przeglądarce i zaloguj się (numer telefonu, kod SMS, captcha oraz potwierdzenie email).\n2. Po pomyślnym zalogowaniu przeglądarka zostanie przekierowana na stronę `https://account.inpost-group.com/callback?code=...` (może być pusta lub pokazywać błąd - to normalne).\n3. Skopiuj pełny adres z paska adresu przeglądarki i wklej go poniżej.",
+        "description": "1. Otwórz [stronę logowania InPost]({login_url}) w przeglądarce i zaloguj się (numer telefonu, kod SMS, captcha oraz potwierdzenie email).\n2. Po pomyślnym zalogowaniu przeglądarka zostanie przekierowana na stronę `{callback_url}` (może być pusta lub pokazywać błąd - to normalne).\n3. Skopiuj pełny adres z paska adresu przeglądarki i wklej go poniżej.",
+        "data": {
+          "redirect_url": "Adres URL przekierowania (lub kod)"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Ponowne logowanie InPost",
+        "description": "InPost odrzucił zapisane dane logowania. Zaloguj się ponownie na to samo konto.\n\n1. Otwórz [stronę logowania InPost]({login_url}) w przeglądarce i zaloguj się (numer telefonu, kod SMS, captcha oraz potwierdzenie email).\n2. Po pomyślnym zalogowaniu przeglądarka zostanie przekierowana na stronę `{callback_url}` (może być pusta lub pokazywać błąd - to normalne).\n3. Skopiuj pełny adres z paska adresu przeglądarki i wklej go poniżej.",
         "data": {
           "redirect_url": "Adres URL przekierowania (lub kod)"
         }
       },
       "lockers": {
         "title": "Wybierz paczkomaty",
-        "description": "Wybierz paczkomaty, które chcesz monitorować.",
+        "description": "Wybierz paczkomaty, które chcesz monitorować. Lista zawiera paczkomaty najbliższe lokalizacji domu; aby dodać dowolny inny, wpisz jego kod (np. GDA117M) i naciśnij Enter.",
+        "data": {
+          "lockers": "Paczkomaty"
+        }
+      },
+      "profile_failed": {
+        "title": "Nie udało się odczytać profilu InPost",
+        "description": "Logowanie powiodło się, ale nie udało się odczytać numeru telefonu z profilu InPost. Usługa InPost może być chwilowo niedostępna.",
+        "menu_options": {
+          "retry_profile": "Spróbuj ponownie",
+          "restart_login": "Zaloguj się ponownie"
+        }
+      }
+    }
+  },
+  "options": {
+    "error": {
+      "cannot_fetch_lockers": "Nie udało się pobrać listy paczkomatów. Możesz wpisać kody paczkomatów ręcznie lub skonfigurować je później w opcjach.",
+      "unknown_locker": "Co najmniej jednego z podanych kodów nie ma na publicznej liście paczkomatów InPost (lista może być nieaktualna). Sprawdź, czy w kodach nie ma literówek; wyślij ponownie, aby dodać je mimo to."
+    },
+    "step": {
+      "init": {
+        "title": "Wybierz paczkomaty",
+        "description": "Wybierz paczkomaty, które chcesz monitorować. Lista zawiera paczkomaty najbliższe lokalizacji domu; aby dodać dowolny inny, wpisz jego kod (np. GDA117M) i naciśnij Enter.",
         "data": {
           "lockers": "Paczkomaty"
         }

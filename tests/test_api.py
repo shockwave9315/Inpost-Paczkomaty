@@ -5,6 +5,7 @@ import json
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import aiohttp
 import pytest
 
 from custom_components.inpost_paczkomaty.api import InPostApiClient
@@ -110,6 +111,11 @@ def mock_hass():
     """Create a mock Home Assistant instance."""
     hass = MagicMock()
     hass.config.language = "pl"
+
+    async def _run_in_executor(func, *args):
+        return func(*args)
+
+    hass.async_add_executor_job = _run_in_executor
     return hass
 
 
@@ -455,8 +461,8 @@ class TestInPostApiClient:
         client = InPostApiClient(mock_hass, mock_config_entry)
 
         mock_response = HttpResponse(
-            body={"error": "Unauthorized"},
-            status=401,
+            body={"error": "Server error"},
+            status=500,
         )
 
         with patch.object(
@@ -467,7 +473,7 @@ class TestInPostApiClient:
             with pytest.raises(ApiClientError) as exc_info:
                 await client.get_parcels()
 
-            assert "Status: 401" in str(exc_info.value)
+            assert "Status: 500" in str(exc_info.value)
 
     @pytest.mark.asyncio
     async def test_close(self, mock_hass, mock_config_entry):
@@ -545,8 +551,8 @@ class TestInPostApiClient:
         client = InPostApiClient(mock_hass, mock_config_entry)
 
         mock_response = HttpResponse(
-            body={"error": "Unauthorized"},
-            status=401,
+            body={"error": "Server error"},
+            status=500,
         )
 
         with patch.object(
@@ -557,7 +563,7 @@ class TestInPostApiClient:
             with pytest.raises(ApiClientError) as exc_info:
                 await client.get_profile()
 
-            assert "Status: 401" in str(exc_info.value)
+            assert "Status: 500" in str(exc_info.value)
 
 
 # =============================================================================
@@ -1363,7 +1369,7 @@ class TestParcelLockers:
         with patch.object(
             client._public_http_client, "get", new_callable=AsyncMock
         ) as mock_get:
-            mock_get.side_effect = Exception("Network error")
+            mock_get.side_effect = aiohttp.ClientConnectionError("Network error")
 
             with pytest.raises(ApiClientError) as exc_info:
                 await client.get_parcel_lockers_list()

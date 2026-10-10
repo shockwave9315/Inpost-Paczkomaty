@@ -19,7 +19,19 @@ CONF_SHOW_ONLY_OWN_PARCELS = "show_only_own_parcels"
 DEFAULT_SHOW_ONLY_OWN_PARCELS = False
 
 # Config entry keys
-ENTRY_PHONE_NUMBER_CONFIG = "phone_number"
+CONF_LOCKERS = "lockers"
+
+# Polling backoff: after a failed update the interval doubles up to this cap
+MAX_BACKOFF_SECONDS = 3600
+# Upper bound for a server-provided Retry-After value
+MAX_RETRY_AFTER_SECONDS = 86400
+# Monotonic API deadlines that survive replacement of a failed setup coordinator.
+DATA_SETUP_RATE_LIMITS = f"{DOMAIN}_setup_rate_limits"
+
+# Parcel lockers list handling in config/options flow
+DATA_LOCKERS_CACHE = f"{DOMAIN}_lockers_cache"
+LOCKERS_CACHE_TTL = 12 * 60 * 60  # seconds
+LOCKERS_SELECT_LIMIT = 300  # nearest lockers offered in the dropdown
 
 # OAuth2 token storage keys
 CONF_ACCESS_TOKEN = "access_token"

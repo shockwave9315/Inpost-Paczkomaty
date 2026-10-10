@@ -1,24 +1,58 @@
 {
   "config": {
     "abort": {
-      "token_exchange_failed": "Failed to complete authentication. Please try again."
+      "already_configured": "This InPost account is already configured.",
+      "reauth_successful": "Re-authentication was successful.",
+      "wrong_account": "You signed in to a different InPost account than the one that needs re-authentication."
     },
     "error": {
       "invalid_auth_response": "Could not read a valid authorization code. Make sure you copied the full redirect URL after logging in, then try again.",
-      "rate_limited_error": "Too many requests. Please try again later.",
-      "cannot_fetch_lockers": "Failed to fetch parcel lockers list. You can continue without selecting lockers and configure them later in options."
+      "cannot_fetch_lockers": "Failed to fetch parcel lockers list. You can type locker codes manually or configure them later in options.",
+      "unknown_locker": "At least one of the entered codes is not on InPost's public list of parcel lockers (the list may be out of date). Check the codes for typos; submit again to add them anyway.",
+      "auth_rejected": "InPost did not accept the new login. Sign in again using the link below.",
+      "cannot_connect": "Could not reach InPost to complete the login. Try again in a moment - the same redirect address can be submitted again."
     },
     "step": {
       "user": {
         "title": "InPost Login",
-        "description": "1. Open the [InPost login page]({login_url}) in your browser and sign in (phone number, SMS code, captcha and email confirmation).\n2. After a successful login your browser is redirected to a `https://account.inpost-group.com/callback?code=...` page (it may look blank or show an error - that is fine).\n3. Copy the full address from your browser's address bar and paste it below.",
+        "description": "1. Open the [InPost login page]({login_url}) in your browser and sign in (phone number, SMS code, captcha and email confirmation).\n2. After a successful login your browser is redirected to a `{callback_url}` page (it may look blank or show an error - that is fine).\n3. Copy the full address from your browser's address bar and paste it below.",
+        "data": {
+          "redirect_url": "Redirect URL (or code)"
+        }
+      },
+      "reauth_confirm": {
+        "title": "InPost Re-authentication",
+        "description": "InPost no longer accepts the stored credentials. Sign in again to the same account.\n\n1. Open the [InPost login page]({login_url}) in your browser and sign in (phone number, SMS code, captcha and email confirmation).\n2. After a successful login your browser is redirected to a `{callback_url}` page (it may look blank or show an error - that is fine).\n3. Copy the full address from your browser's address bar and paste it below.",
         "data": {
           "redirect_url": "Redirect URL (or code)"
         }
       },
       "lockers": {
         "title": "Select Parcel Lockers",
-        "description": "Choose the parcel lockers you want to monitor.",
+        "description": "Choose the parcel lockers you want to monitor. The list shows the lockers nearest to your home location; to add any other locker, type its code (for example GDA117M) and press Enter.",
+        "data": {
+          "lockers": "Parcel Lockers"
+        }
+      },
+      "profile_failed": {
+        "title": "Could not read your InPost profile",
+        "description": "You are signed in, but the account's phone number could not be read from the InPost profile. InPost may be temporarily unavailable.",
+        "menu_options": {
+          "retry_profile": "Try again",
+          "restart_login": "Sign in again"
+        }
+      }
+    }
+  },
+  "options": {
+    "error": {
+      "cannot_fetch_lockers": "Failed to fetch parcel lockers list. You can type locker codes manually or configure them later in options.",
+      "unknown_locker": "At least one of the entered codes is not on InPost's public list of parcel lockers (the list may be out of date). Check the codes for typos; submit again to add them anyway."
+    },
+    "step": {
+      "init": {
+        "title": "Select Parcel Lockers",
+        "description": "Choose the parcel lockers you want to monitor. The list shows the lockers nearest to your home location; to add any other locker, type its code (for example GDA117M) and press Enter.",
         "data": {
           "lockers": "Parcel Lockers"
         }
